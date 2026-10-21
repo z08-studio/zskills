@@ -2,8 +2,10 @@
 
 ## Product context
 
-ZSkill Lens is a macOS app in the Z Studio family. It helps users visually read,
-explore, and learn from Agent Skills on local and SSH-connected remote machines.
+ZSkill Lens is an open-source, self-hosted web app in the Z Studio family. It
+helps users visually read, explore, and learn from Agent Skills. A service on
+macOS or Linux reads Skills on its host and provides a browser interface. The
+same service can run on remote machines, with SSH-based access also in scope.
 
 Read `docs/product-brief.md` before making product or architecture decisions.
 Keep confirmed requirements separate from proposed features.
@@ -22,3 +24,5 @@ Keep confirmed requirements separate from proposed features.
 - Scanning or previewing a Skill must not execute its instructions or scripts,
   or modify its source files.
 - Keep explanations traceable to their source and label inferred behavior.
+- Default service listeners to loopback. Treat network exposure as an explicit
+  configuration that requires authentication and a protected connection.
