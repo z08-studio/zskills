@@ -1,0 +1,27 @@
+# macOS metadata
+.DS_Store
+.AppleDouble
+._*
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Xcode build products and user settings
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+
+# Temporary files
+*.swp
+*.swo
+*~
+*.log
