@@ -44,6 +44,7 @@ import {
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { buildExplorerTree, type ExplorerFolder } from './explorer-tree';
+import { stripFrontmatter } from './frontmatter';
 import type {
   EditorChoice,
   FileContent,
@@ -206,12 +207,6 @@ function safeUrl(url: string) {
   )
     return '';
   return url;
-}
-function previewContent(content: string) {
-  return content.replace(
-    /^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/,
-    '',
-  );
 }
 function headingSlug(text: string) {
   return text
@@ -405,7 +400,7 @@ const MarkdownPreview = memo(function MarkdownPreview({
         urlTransform={safeUrl}
         components={components}
       >
-        {previewContent(content)}
+        {stripFrontmatter(content)}
       </ReactMarkdown>
     </article>
   );

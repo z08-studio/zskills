@@ -76,13 +76,26 @@ fn same_signature(a: &FileSignature, b: &FileSignature) -> bool {
 
 fn frontmatter(content: &str) -> Result<&str, ScanError> {
     let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    let body = content
-        .strip_prefix("---\r\n")
-        .or_else(|| content.strip_prefix("---\n"))
+    let (opening, body) = content
+        .split_once('\n')
         .ok_or_else(|| ScanError::invalid("No YAML frontmatter found."))?;
+    // Horizontal whitespace after a delimiter is presentation, not content.
+    // Keep escaped, indented, or longer markers distinct from frontmatter.
+    if opening
+        .strip_suffix('\r')
+        .unwrap_or(opening)
+        .trim_end_matches([' ', '\t'])
+        != "---"
+    {
+        return Err(ScanError::invalid("No YAML frontmatter found."));
+    }
     let mut offset = 0;
     for line in body.split_inclusive('\n') {
-        if line.trim_end_matches(['\r', '\n']) == "---" {
+        if line
+            .trim_end_matches(['\r', '\n'])
+            .trim_end_matches([' ', '\t'])
+            == "---"
+        {
             return Ok(&body[..offset]);
         }
         offset += line.len();
@@ -826,6 +839,65 @@ mod tests {
         let error = read_skill(&canonical, &valid, &source_root, None).unwrap_err();
         assert!(!error.io);
         assert!(error.message.contains("outside"));
+    }
+
+    #[test]
+    fn discovers_padded_frontmatter_delimiters_without_rewriting_source() {
+        let (_fixture, home) = fixture();
+        let variants = [
+            ("---  ", "---", "\n", ""),
+            ("---\t", "--- \t", "\n", ""),
+            ("--- \t ", "---\t ", "\r\n", "\u{feff}"),
+            ("---", "---  ", "\r\n", ""),
+        ];
+        let mut originals = vec![];
+        for (index, (opening, closing, newline, bom)) in variants.iter().enumerate() {
+            let candidate = home.join(format!("padded-{index}"));
+            fs::create_dir(&candidate).unwrap();
+            let content = format!(
+                "{bom}{opening}{newline}name: padded-{index}  {newline}description: A readable Skill.  {newline}{closing}{newline}# Body{newline}"
+            );
+            let metadata_path = candidate.join("SKILL.md");
+            fs::write(&metadata_path, &content).unwrap();
+            originals.push((metadata_path, content));
+        }
+        let (entries, _, progress) = discover(
+            vec![root(&home, "home")],
+            Entries::new(),
+            || false,
+            |_, _, _| {},
+        );
+        assert_eq!(entries.len(), variants.len());
+        assert_eq!(progress.invalid_skills, 0);
+        for (index, (metadata_path, original)) in originals.iter().enumerate() {
+            assert_eq!(fs::read_to_string(metadata_path).unwrap(), *original);
+            let entry = entries
+                .values()
+                .find(|entry| entry.record.name == format!("padded-{index}"))
+                .unwrap();
+            assert_eq!(entry.record.description, "A readable Skill.");
+        }
+    }
+
+    #[test]
+    fn padded_delimiters_do_not_accept_escaped_indented_or_non_marker_lines() {
+        let metadata = "name: example\ndescription: A readable Skill.\n";
+        for opening in ["\\---", " ---", "\t---", "----", "--- suffix", "---\u{a0}"] {
+            assert!(
+                frontmatter(&format!("{opening}\n{metadata}---\n# Body\n")).is_err(),
+                "Unexpected opening marker: {opening:?}"
+            );
+        }
+        for closing in ["\\---", " ---", "----", "--- suffix", "---\u{a0}"] {
+            assert!(
+                frontmatter(&format!("--- \t\n{metadata}{closing}\n# Body\n")).is_err(),
+                "Unexpected closing marker: {closing:?}"
+            );
+        }
+        assert_eq!(
+            frontmatter(&format!("--- \t\n{metadata}--- \t")).unwrap(),
+            metadata
+        );
     }
 
     #[test]
