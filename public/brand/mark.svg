@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>ZSkills</title>
+  <g fill="#173b8f">
+    <rect x="54.5" y="8" width="19" height="112" rx="9.5" />
+    <rect x="54.5" y="8" width="19" height="112" rx="9.5" transform="rotate(45 64 64)" />
+    <rect x="54.5" y="8" width="19" height="112" rx="9.5" transform="rotate(90 64 64)" />
+    <rect x="54.5" y="8" width="19" height="112" rx="9.5" transform="rotate(135 64 64)" />
+  </g>
+</svg>
