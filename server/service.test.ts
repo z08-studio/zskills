@@ -14,14 +14,17 @@ import path from 'node:path';
 import { createServer, request, type Server } from 'node:http';
 import { createApp } from './index.js';
 import { ServiceError, SkillsService, type EditorLaunch } from './service.js';
+import type { WorkspaceSnapshot } from '../shared/types.js';
 
 let fixture: string;
+const services = new Set<SkillsService>();
 before(async () => {
   fixture = await realpath(
     await mkdtemp(path.join(os.tmpdir(), 'zskills-tests-')),
   );
 });
 after(async () => {
+  for (const service of services) service.dispose();
   await rm(fixture, { recursive: true, force: true });
 });
 
@@ -47,15 +50,16 @@ function serviceAt(
   configName: string,
   overrides: ConstructorParameters<typeof SkillsService>[0] = {},
 ): SkillsService {
-  return new SkillsService({
+  const service = new SkillsService({
     homeDir: fixture,
-    projectDir: root,
     configDir: path.join(fixture, configName),
     roots: [{ label: 'Test root', path: root, kind: 'personal' }],
     platform: 'linux',
     environment: {},
     ...overrides,
   });
+  services.add(service);
+  return service;
 }
 
 test('discovers real Skills, safely parses YAML, deduplicates canonical directories, and never executes scripts', async () => {
@@ -65,7 +69,10 @@ test('discovers real Skills, safely parses YAML, deduplicates canonical director
   await skillAt(path.join(root, 'second'), 'same-name');
   await skillAt(path.join(installed, 'linked'), 'linked-skill');
   await mkdir(path.join(root, 'node_modules'), { recursive: true });
-  await skillAt(path.join(root, 'node_modules', 'ignored'));
+  await skillAt(
+    path.join(root, 'node_modules', 'included'),
+    'dependency-skill',
+  );
   await symlink(
     path.join(installed, 'linked'),
     path.join(root, 'linked'),
@@ -87,7 +94,7 @@ test('discovers real Skills, safely parses YAML, deduplicates canonical director
     '---\nname: [broken\n---\n# Still readable',
   );
   const service = serviceAt(root, 'discovery-config');
-  const snapshot = await service.getWorkspace();
+  const snapshot = await service.rescan();
   assert.equal(snapshot.skills.length, 4);
   assert.equal(
     snapshot.skills.filter((skill) => skill.name === 'same-name').length,
@@ -98,10 +105,9 @@ test('discovers real Skills, safely parses YAML, deduplicates canonical director
     snapshot.skills.find((skill) => skill.name === 'linked-skill')?.path,
     path.join(installed, 'linked'),
   );
-  assert.match(
-    snapshot.skills.find((skill) => skill.name === 'invalid-yaml')?.issue ?? '',
-    /invalid YAML/,
-  );
+  assert.ok(snapshot.skills.some((skill) => skill.name === 'dependency-skill'));
+  assert.ok(!snapshot.skills.some((skill) => skill.name === 'invalid-yaml'));
+  assert.equal(snapshot.scanProgress.invalidSkills, 1);
   assert.equal(
     snapshot.skills.find((skill) => skill.name === 'same-name')?.description,
     'A useful Skill.\nWith a second line.',
@@ -142,7 +148,7 @@ test('blocks traversal and symlink escape previews while allowing source and int
     Buffer.alloc(2 * 1024 * 1024 + 1, 'a'),
   );
   const service = serviceAt(root, 'preview-config');
-  const id = (await service.getWorkspace()).skills[0]!.id;
+  const id = (await service.rescan()).skills[0]!.id;
   const detail = await service.getSkill(id);
   assert.ok(detail.files.some((file) => file.path === 'scripts/example.ts'));
   assert.ok(!detail.files.some((file) => file.path === 'escape.txt'));
@@ -174,18 +180,21 @@ test('persists custom roots and editor choices outside Skill sources', async () 
   const extra = await directory('custom');
   await skillAt(path.join(extra, 'added'));
   const service = serviceAt(root, 'settings-config');
-  const snapshot = await service.addRoot(extra);
+  await service.addRoot(extra);
+  const snapshot = await service.rescan();
   assert.equal(snapshot.skills.length, 1);
   const custom = snapshot.roots.find(
     (candidate) => candidate.kind === 'custom',
   )!;
   assert.equal(custom.removable, true);
   await service.setEditor('zed');
+  service.dispose();
   const fresh = serviceAt(root, 'settings-config');
-  assert.equal((await fresh.getWorkspace()).skills.length, 1);
+  assert.equal((await fresh.rescan()).skills.length, 1);
   assert.equal((await fresh.getEditor()).editor, 'zed');
   assert.equal((await fresh.getEditor()).available, false);
-  assert.equal((await fresh.removeRoot(custom.id)).skills.length, 0);
+  await fresh.removeRoot(custom.id);
+  assert.equal((await fresh.rescan()).skills.length, 0);
   await assert.rejects(fresh.removeRoot(snapshot.roots[0]!.id), /Only custom/);
   await assert.rejects(fresh.addRoot('relative/path'), /absolute/);
 });
@@ -208,7 +217,7 @@ test('editor actions launch a fixed program with file arguments only after a req
       launches.push(launch);
     },
   });
-  const id = (await service.getWorkspace()).skills[0]!.id;
+  const id = (await service.rescan()).skills[0]!.id;
   await service.getSkill(id);
   await service.getFile(id, 'SKILL.md');
   assert.equal(launches.length, 0);
@@ -233,10 +242,112 @@ test('editor actions launch a fixed program with file arguments only after a req
   assert.equal(launches.length, 3);
 });
 
+test('HTTP workspace and rescan return progressive snapshots with the existing library available', async () => {
+  const root = await directory('http-progressive');
+  await skillAt(path.join(root, 'first'), 'first');
+  const service = serviceAt(root, 'http-progressive-config');
+  const server: Server = createServer(createApp(service));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const initial = (await (
+      await fetch(`${base}/api/workspace`)
+    ).json()) as WorkspaceSnapshot;
+    assert.equal(initial.scanning, true);
+    assert.equal(initial.lastScannedAt, null);
+    assert.deepEqual(initial.skills, []);
+    await service.rescan();
+    await skillAt(path.join(root, 'second'), 'second');
+    const started = (await (
+      await fetch(`${base}/api/rescan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+    ).json()) as WorkspaceSnapshot;
+    assert.equal(started.scanning, true);
+    assert.deepEqual(
+      started.skills.map((skill) => skill.name),
+      ['first'],
+    );
+    await service.rescan();
+    const completed = (await (
+      await fetch(`${base}/api/workspace`)
+    ).json()) as WorkspaceSnapshot;
+    assert.equal(completed.scanning, false);
+    assert.deepEqual(completed.skills.map((skill) => skill.name).sort(), [
+      'first',
+      'second',
+    ]);
+  } finally {
+    service.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test('HTTP custom-root removal accepts an empty JSON object and immediately revokes its library entries', async () => {
+  const root = await directory('http-root-mutations');
+  const extra = await directory('http-root-mutations-extra');
+  await skillAt(path.join(extra, 'extra'), 'custom-root-skill');
+  const service = serviceAt(root, 'http-root-mutations-config');
+  const server: Server = createServer(createApp(service));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const addedResponse = await fetch(`${base}/api/roots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: extra }),
+    });
+    assert.equal(addedResponse.status, 200);
+    const added = (await addedResponse.json()) as WorkspaceSnapshot;
+    const custom = added.roots.find((candidate) => candidate.path === extra);
+    assert.ok(custom && custom.removable);
+    const completed = await service.rescan();
+    assert.ok(
+      completed.skills.some((skill) => skill.name === 'custom-root-skill'),
+    );
+    const removeUrl = `${base}/api/roots/${custom.id}`;
+    const rejected = await fetch(removeUrl, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'text/plain' },
+      body: '{}',
+    });
+    assert.equal(rejected.status, 415);
+    assert.ok(
+      (await service.getWorkspace()).roots.some(
+        (candidate) => candidate.id === custom.id,
+      ),
+    );
+    const removedResponse = await fetch(removeUrl, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(removedResponse.status, 200);
+    const removed = (await removedResponse.json()) as WorkspaceSnapshot;
+    assert.ok(!removed.roots.some((candidate) => candidate.id === custom.id));
+    assert.ok(!removed.skills.some((skill) => skill.rootId === custom.id));
+    await service.rescan();
+  } finally {
+    service.dispose();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test('HTTP API rejects foreign hosts, cross-site mutations, non-JSON writes, and malformed requests', async () => {
   const root = await directory('http');
   await skillAt(path.join(root, 'example'));
   const service = serviceAt(root, 'http-config');
+  await service.rescan();
   const server: Server = createServer(createApp(service));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();

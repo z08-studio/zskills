@@ -31,19 +31,28 @@ The interface is a compact, editor-style workbench with a normal sans-serif
 font. Browse Skills under their actual source folders on the left, expand a
 Skill's files, and open them in tabs on the right. Nested folders can be
 collapsed; single-child folder paths are compacted, and search keeps matching
-Skills in their folder context. The home view shows the connected computer, scan coverage,
-and source counts. File previews are read-only.
+Skills in their folder context. The home view shows the connected computer,
+discovery progress, scan coverage, and source counts. File previews are read-only.
 
 The service scans configured folders on **the computer running the service**.
-Default locations include personal Skill folders for Codex, Claude Code,
-Gemini, and other agents, the Codex plugin cache, and project Skill folders
-relative to the directory from which the service starts. Add custom scan folders
-in the interface when your Skills live elsewhere. Coverage reports distinguish
-missing, unreadable, and scanned locations; the list is not a claim to have
-searched the entire filesystem or to show only Skills enabled in an agent.
+It checks common personal Skill folders and the Codex plugin cache first, then
+discovers valid Skills throughout the service user's Home directory in the
+background. Repository-level Skills and hidden directories are included without
+adding each project separately. The service's working directory is not a default
+scan folder. Custom scan folders can cover locations outside Home.
 
-The **User directories** and **Plugin packages** filters describe discovery
-locations. They do not identify who wrote a Skill or whether an agent enables it.
+The library stays available while discovery runs, with cached results labeled
+until revalidation finishes. A valid candidate is a readable `SKILL.md` with
+nonempty `name` and `description` strings in valid YAML metadata. Invalid
+candidates are counted separately with diagnostic examples. Discovery includes
+dependency and cache directories and does not silently stop at a fixed depth or
+directory count. Coverage reports show unreadable locations and external
+directory links that were not followed; scan completion is not a claim to have
+read inaccessible folders or to show only Skills enabled in an agent.
+
+The **User directories**, **Home directories**, and **Plugin packages** filters
+describe discovery locations. They do not identify who wrote a Skill or whether
+an agent enables it.
 
 Choose the system default, VS Code, or Zed in editor settings. Use **Open in
 editor** to hand a Skill folder or the current file to that editor. The editor
@@ -53,6 +62,9 @@ instructions or scripts and do not modify Skill source files.
 
 Scan-folder and editor preferences are stored in `~/.config/zskills`. Set
 `ZSKILLS_CONFIG_DIR` before startup to use a different configuration directory.
+The same directory holds a versioned discovery cache. Discovered Skill
+directories are watched for metadata changes when supported; use **Rescan all**
+to find Skills added in new locations. File previews retain explicit reload.
 
 ## Use a remote computer
 

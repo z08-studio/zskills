@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { constants, watch, type FSWatcher } from 'node:fs';
 import {
   access,
   mkdir,
@@ -9,11 +9,22 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
 import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { parseDocument } from 'yaml';
+import {
+  addIssue,
+  MAX_SCAN_ISSUES,
+  discover,
+  errorMessage as message,
+  missing as isMissing,
+  readSkill,
+  stableId,
+  within,
+  type CachedSkill,
+} from './discovery.js';
 import type {
   EditorChoice,
   EditorSettings,
@@ -21,6 +32,7 @@ import type {
   FileEntry,
   SkillDetail,
   SkillRecord,
+  ScanProgress,
   SourceKind,
   SourceRoot,
   WorkspaceSnapshot,
@@ -42,7 +54,7 @@ const EXCLUDED_DIRECTORIES = new Set([
   '.tox',
   'coverage',
 ]);
-const MAX_SCAN_DIRECTORIES = 30_000;
+const CACHED_RECORD_ISSUE = 'Cached metadata; awaiting filesystem validation.';
 const MAX_SCAN_DEPTH = 16;
 const MAX_SKILL_FILES = 5_000;
 const MAX_TEXT_SIZE = 2 * 1024 * 1024;
@@ -82,6 +94,7 @@ export interface EditorLaunch {
 }
 export interface ServiceOptions {
   homeDir?: string;
+  /** @deprecated Kept for callers upgrading from cwd-based discovery; ignored. */
   projectDir?: string;
   configDir?: string;
   platform?: string;
@@ -89,30 +102,6 @@ export interface ServiceOptions {
   environment?: NodeJS.ProcessEnv;
   roots?: RootDefinition[];
   launchEditor?: (launch: EditorLaunch) => Promise<void>;
-}
-
-function stableId(value: string): string {
-  return createHash('sha256').update(value).digest('hex').slice(0, 24);
-}
-
-function within(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== '..' &&
-      !path.isAbsolute(relative))
-  );
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : 'Unknown filesystem error';
-}
-
-function isMissing(error: unknown): boolean {
-  return ['ENOENT', 'ENOTDIR'].includes(
-    (error as NodeJS.ErrnoException).code ?? '',
-  );
 }
 
 async function launchProcess(launch: EditorLaunch): Promise<void> {
@@ -137,7 +126,6 @@ async function launchProcess(launch: EditorLaunch): Promise<void> {
 
 export class SkillsService {
   private readonly homeDir: string;
-  private readonly projectDir: string;
   private readonly configDir: string;
   private readonly platform: string;
   private readonly hostname: string;
@@ -149,10 +137,20 @@ export class SkillsService {
   private scanning: Promise<WorkspaceSnapshot> | null = null;
   private initialized: Promise<void> | null = null;
   private configWrites: Promise<void> = Promise.resolve();
+  private cacheWrites: Promise<void> = Promise.resolve();
+  private entries = new Map<string, CachedSkill>();
+  private visibleEntries = new Map<string, CachedSkill>();
+  private readonly watchAnchors = new Map<string, CachedSkill>();
+  private readonly watchers = new Map<string, FSWatcher>();
+  private readonly watchFailures = new Set<string>();
+  private readonly pendingRefreshes = new Set<string>();
+  private refreshTimer: NodeJS.Timeout | null = null;
+  private disposed = false;
+  private hasStarted = false;
+  private scanRevision = 0;
 
   constructor(options: ServiceOptions = {}) {
     this.homeDir = path.resolve(options.homeDir ?? os.homedir());
-    this.projectDir = path.resolve(options.projectDir ?? process.cwd());
     this.configDir = path.resolve(
       options.configDir ??
         process.env.ZSKILLS_CONFIG_DIR ??
@@ -188,7 +186,7 @@ export class SkillsService {
         path: path.join(this.homeDir, '.codex/plugins/cache'),
         kind: 'cache',
       },
-      { label: 'Project', path: this.projectDir, kind: 'project' },
+      { label: 'Home directory', path: this.homeDir, kind: 'home' },
     ];
   }
 
@@ -216,6 +214,19 @@ export class SkillsService {
               'ZSkills settings could not be loaded; using defaults.',
             );
         }
+        const canonicalHome = await realpath(this.homeDir).catch(
+          () => this.homeDir,
+        );
+        this.config.roots = (
+          await Promise.all(
+            this.config.roots.map(async (root) =>
+              (await realpath(root).catch(() => root)) === canonicalHome
+                ? null
+                : root,
+            ),
+          )
+        ).filter((root): root is string => root !== null);
+        await this.loadCache();
       })();
     }
     await this.initialized;
@@ -238,127 +249,145 @@ export class SkillsService {
     await write;
   }
 
-  async getWorkspace(): Promise<WorkspaceSnapshot> {
-    await this.initialize();
-    if (this.scanning) return this.scanning;
-    if (!this.snapshot) return this.rescan();
-    const editor = await this.getEditor();
+  private rootDefinitions(): RootDefinition[] {
+    // Explicit tool/custom roots retain ownership when Home reaches the same
+    // canonical directory later. The service working directory is not a source.
+    const roots = [
+      ...this.defaultRoots.filter((root) => root.kind !== 'home'),
+      ...this.config.roots
+        .filter(
+          (root) =>
+            !this.defaultRoots.some(
+              (definition) =>
+                definition.kind === 'home' &&
+                path.resolve(definition.path) === path.resolve(root),
+            ),
+        )
+        .map((root): RootDefinition => ({
+          label: path.basename(root) || root,
+          path: root,
+          kind: 'custom',
+        })),
+      ...this.defaultRoots.filter((root) => root.kind === 'home'),
+    ];
+    return roots.filter(
+      (root, index) =>
+        roots.findIndex(
+          (other) => path.resolve(other.path) === path.resolve(root.path),
+        ) === index,
+    );
+  }
+
+  private sourceRoots(): SourceRoot[] {
+    return this.rootDefinitions().map((definition) => ({
+      ...definition,
+      path: path.resolve(definition.path),
+      id: stableId(path.resolve(definition.path)),
+      status: 'scanning',
+      skillCount: 0,
+      removable: definition.kind === 'custom',
+    }));
+  }
+
+  private progress(): ScanProgress {
     return {
-      ...this.snapshot,
-      host: { ...this.snapshot.host, editorAvailable: editor.available },
-      editor,
+      phase: 'quick',
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      directoriesScanned: 0,
+      candidatesChecked: 0,
+      invalidSkills: 0,
+      unreadableDirectories: 0,
+      externalLinksSkipped: 0,
+      currentPath: null,
+      restoredFromCache: false,
+      watching: false,
+      issues: [],
     };
   }
 
-  async rescan(): Promise<WorkspaceSnapshot> {
-    await this.initialize();
-    if (this.scanning) return this.scanning;
-    this.scanning = this.scan().finally(() => {
-      this.scanning = null;
-    });
-    return this.scanning;
-  }
-
-  private async scan(): Promise<WorkspaceSnapshot> {
-    const definitions = [
-      ...this.defaultRoots,
-      ...this.config.roots.map((root): RootDefinition => ({
-        label: path.basename(root) || root,
-        path: root,
-        kind: 'custom',
-      })),
-    ];
-    const roots: SourceRoot[] = [];
-    const skills = new Map<string, SkillRecord>();
-    for (const definition of definitions) {
-      const root: SourceRoot = {
-        id: stableId(path.resolve(definition.path)),
-        ...definition,
-        status: 'ready',
-        skillCount: 0,
-        removable: definition.kind === 'custom',
-      };
-      roots.push(root);
-      try {
-        const canonicalRoot = await realpath(root.path);
-        if (!(await stat(canonicalRoot)).isDirectory())
-          throw new Error('The scan root is not a directory.');
-        const visited = new Set<string>();
-        let directoryCount = 0;
-        const walk = async (
-          directory: string,
-          depth: number,
-          boundary = canonicalRoot,
-        ): Promise<void> => {
-          if (directoryCount >= MAX_SCAN_DIRECTORIES) {
-            root.error = `The scan stopped at the ${MAX_SCAN_DIRECTORIES.toLocaleString('en-US')} directory limit. Choose a more specific root.`;
-            return;
-          }
-          if (depth > MAX_SCAN_DEPTH) {
-            root.error = `Some folders exceed the scan depth limit (${MAX_SCAN_DEPTH}).`;
-            return;
-          }
-          const canonical = await realpath(directory);
-          if (visited.has(canonical)) return;
-          // Installed Skills are often directory symlinks into a package cache. A
-          // linked Skill establishes its own preview boundary; arbitrary linked
-          // directories outside a scan root are never recursively explored.
-          if (!within(boundary, canonical)) {
-            const linkedSkill = await realpath(
-              path.join(canonical, 'SKILL.md'),
-            ).catch(() => null);
-            if (
-              !linkedSkill ||
-              !within(canonical, linkedSkill) ||
-              !(await stat(linkedSkill)).isFile()
-            )
-              return;
-            boundary = canonical;
-          }
-          visited.add(canonical);
-          directoryCount += 1;
-          let entries;
-          try {
-            entries = await readdir(canonical, { withFileTypes: true });
-          } catch (error) {
-            root.error = `Some folders could not be read: ${message(error)}`;
-            return;
-          }
-          const skillFile = entries.find((entry) => entry.name === 'SKILL.md');
-          if (skillFile) {
-            const skillFilePath = await realpath(
-              path.join(canonical, 'SKILL.md'),
-            ).catch(() => null);
-            if (skillFilePath && within(canonical, skillFilePath)) {
-              root.skillCount += 1;
-              if (!skills.has(canonical))
-                skills.set(canonical, await this.readRecord(canonical, root));
-            }
-          }
-          const directories = entries.filter(
-            (entry) =>
-              !EXCLUDED_DIRECTORIES.has(entry.name) &&
-              (entry.isDirectory() || entry.isSymbolicLink()),
-          );
-          for (const entry of directories) {
-            const child = path.join(canonical, entry.name);
-            try {
-              if ((await stat(child)).isDirectory())
-                await walk(child, depth + 1, boundary);
-            } catch (error) {
-              if (!isMissing(error))
-                root.error = `Some folders could not be read: ${message(error)}`;
-            }
-          }
-        };
-        await walk(canonicalRoot, 0);
-        if (root.error) root.status = 'error';
-      } catch (error) {
-        root.status = isMissing(error) ? 'missing' : 'error';
-        if (!isMissing(error)) root.error = message(error);
+  private async loadCache(): Promise<void> {
+    const roots = this.sourceRoots();
+    let lastScannedAt: string | null = null;
+    try {
+      const data: unknown = JSON.parse(
+        await readFile(
+          path.join(this.configDir, 'discovery-cache.json'),
+          'utf8',
+        ),
+      );
+      if (!data || typeof data !== 'object') throw new Error('Invalid cache.');
+      const cache = data as Record<string, unknown>;
+      if (
+        cache.version !== 1 ||
+        cache.homeDir !== this.homeDir ||
+        !Array.isArray(cache.entries)
+      )
+        throw new Error('Incompatible cache.');
+      const restored = new Map<string, CachedSkill>();
+      for (const value of cache.entries) {
+        if (!value || typeof value !== 'object')
+          throw new Error('Invalid cached Skill.');
+        const entry = value as CachedSkill;
+        const record = entry.record;
+        const root = roots.find((candidate) => candidate.id === record?.rootId);
+        if (
+          !root ||
+          !record ||
+          !entry.signature ||
+          typeof record.path !== 'string' ||
+          record.path.includes('\0') ||
+          !path.isAbsolute(record.path) ||
+          path.resolve(record.path) !== record.path ||
+          typeof entry.sourcePath !== 'string' ||
+          entry.sourcePath.includes('\0') ||
+          path.resolve(entry.sourcePath) !== entry.sourcePath ||
+          !path.isAbsolute(entry.sourcePath) ||
+          !within(root.path, entry.sourcePath) ||
+          record.id !== stableId(record.path) ||
+          record.source !== root.kind ||
+          typeof record.name !== 'string' ||
+          !record.name.trim() ||
+          typeof record.description !== 'string' ||
+          !record.description.trim() ||
+          typeof record.modifiedAt !== 'string' ||
+          !Number.isFinite(Date.parse(record.modifiedAt)) ||
+          !['mtimeMs', 'ctimeMs', 'size', 'ino', 'dev'].every(
+            (key) =>
+              typeof entry.signature[key as keyof typeof entry.signature] ===
+                'number' &&
+              Number.isFinite(
+                entry.signature[key as keyof typeof entry.signature],
+              ),
+          )
+        )
+          throw new Error('Invalid cached Skill.');
+        restored.set(record.path, {
+          sourcePath: entry.sourcePath,
+          signature: entry.signature,
+          record: {
+            ...record,
+            issue: CACHED_RECORD_ISSUE,
+          },
+        });
       }
+      this.entries = restored;
+      if (
+        typeof cache.completedAt === 'string' &&
+        Number.isFinite(Date.parse(cache.completedAt))
+      )
+        lastScannedAt = cache.completedAt;
+    } catch {
+      // Cache contents are advisory. Corruption or a different Home/root setup
+      // never prevents a fresh discovery pass or exposes arbitrary cached paths.
+      this.entries.clear();
     }
-    const editor = await this.getEditor();
+    const editor: EditorSettings = {
+      editor: this.config.editor,
+      available: Boolean(await this.editorCommand(this.config.editor)),
+    };
+    const progress = this.progress();
+    progress.restoredFromCache = this.entries.size > 0;
     this.snapshot = {
       host: {
         hostname: this.hostname,
@@ -366,68 +395,439 @@ export class SkillsService {
         homeDir: this.homeDir,
         editorAvailable: editor.available,
       },
-      skills: [...skills.values()].sort(
-        (a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path),
-      ),
+      skills: [],
       roots,
-      lastScannedAt: new Date().toISOString(),
+      lastScannedAt,
       scanning: false,
+      scanProgress: progress,
       editor,
     };
-    return this.snapshot;
+    this.publishEntries(this.entries, roots);
   }
 
-  private async readRecord(
-    directory: string,
-    root: SourceRoot,
-  ): Promise<SkillRecord> {
-    const record: SkillRecord = {
-      id: stableId(directory),
-      name: path.basename(directory),
-      description: '',
-      path: directory,
-      rootId: root.id,
-      source: root.kind,
-      modifiedAt: new Date(0).toISOString(),
+  private publishEntries(
+    entries: Map<string, CachedSkill>,
+    roots = this.snapshot!.roots,
+  ): void {
+    if (this.disposed || !this.snapshot) return;
+    this.visibleEntries = entries;
+    const skills = [...entries.values()]
+      .map((entry) => ({ ...entry.record }))
+      .sort(
+        (a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path),
+      );
+    const counts = new Map<string, number>();
+    for (const skill of skills)
+      counts.set(skill.rootId, (counts.get(skill.rootId) ?? 0) + 1);
+    this.snapshot = {
+      ...this.snapshot,
+      skills,
+      roots: roots.map((root) => ({
+        ...root,
+        skillCount: counts.get(root.id) ?? 0,
+      })),
+      scanProgress: {
+        ...this.snapshot.scanProgress,
+        issues: [...this.snapshot.scanProgress.issues],
+      },
+    };
+  }
+
+  async getWorkspace(): Promise<WorkspaceSnapshot> {
+    await this.initialize();
+    if (this.disposed) throw new ServiceError(503, 'The service has stopped.');
+    if (!this.hasStarted) this.beginScan();
+    return this.snapshot!;
+  }
+
+  async startScan(): Promise<WorkspaceSnapshot> {
+    await this.initialize();
+    this.beginScan();
+    return this.snapshot!;
+  }
+
+  async rescan(): Promise<WorkspaceSnapshot> {
+    await this.initialize();
+    return this.beginScan();
+  }
+
+  private beginScan(): Promise<WorkspaceSnapshot> {
+    if (this.disposed) throw new ServiceError(503, 'The service has stopped.');
+    if (this.scanning) return this.scanning;
+    this.hasStarted = true;
+    this.watchFailures.clear();
+    const progress = this.progress();
+    progress.restoredFromCache = this.snapshot!.scanProgress.restoredFromCache;
+    progress.watching = this.watchers.size > 0 && !this.watchFailures.size;
+    this.snapshot = {
+      ...this.snapshot!,
+      scanning: true,
+      scanProgress: progress,
+    };
+    const scanning = this.scanRevisions(progress);
+    this.scanning = scanning;
+    // A request for the initial snapshot must never wait for an entire Home.
+    void scanning.catch(() => undefined);
+    return scanning;
+  }
+
+  private async scanRevisions(
+    progress: ScanProgress,
+  ): Promise<WorkspaceSnapshot> {
+    try {
+      while (!this.disposed) {
+        const revision = this.scanRevision;
+        await this.scan(progress, revision);
+        if (revision === this.scanRevision) break;
+        progress = this.progress();
+        progress.restoredFromCache =
+          this.snapshot!.scanProgress.restoredFromCache;
+        this.snapshot = {
+          ...this.snapshot!,
+          scanning: true,
+          scanProgress: progress,
+        };
+      }
+      return this.snapshot!;
+    } finally {
+      // Clear the shared barrier in the same turn that decides no revision is
+      // pending. A later mutation can then start work without losing a wakeup.
+      this.scanning = null;
+      if (!this.disposed && this.pendingRefreshes.size) this.scheduleRefresh();
+    }
+  }
+
+  private async scan(
+    progress: ScanProgress,
+    revision: number,
+  ): Promise<WorkspaceSnapshot> {
+    await setImmediate();
+    const roots = this.sourceRoots();
+    const cached = this.entries;
+    let lastPublished = 0;
+    const publish = (found: Map<string, CachedSkill>, force = false): void => {
+      if (
+        this.disposed ||
+        revision !== this.scanRevision ||
+        (!force && Date.now() - lastPublished < 150)
+      )
+        return;
+      lastPublished = Date.now();
+      // Keep the previous library available until every readable folder has
+      // been visited. Only a completed pass removes unobserved/stale records.
+      this.snapshot = { ...this.snapshot!, scanProgress: progress };
+      this.publishEntries(new Map([...cached, ...found]), roots);
     };
     try {
-      const skillPath = path.join(directory, 'SKILL.md');
-      const fileStat = await stat(skillPath);
-      record.modifiedAt = fileStat.mtime.toISOString();
-      if (!fileStat.isFile())
-        throw new Error('SKILL.md is not a regular file.');
-      if (fileStat.size > MAX_TEXT_SIZE)
-        throw new Error('SKILL.md exceeds the 2 MB preview limit.');
-      const content = await readFile(skillPath, 'utf8');
-      const match = content
-        .replace(/^\uFEFF/, '')
-        .match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-      if (!match) {
-        record.issue = 'No YAML frontmatter found.';
-        return record;
-      }
-      if (match[1]!.length > 128 * 1024)
-        throw new Error('Skill metadata exceeds the 128 KB limit.');
-      const document = parseDocument(match[1]!, {
-        schema: 'core',
-        uniqueKeys: true,
+      const found = await discover({
+        roots,
+        cached,
+        progress,
+        cancelled: () => this.disposed || revision !== this.scanRevision,
+        publish,
       });
-      if (document.errors.length)
-        throw new Error('Skill metadata contains invalid YAML.');
-      const metadata: unknown = document.toJS({ maxAliasCount: 20 });
-      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
-        throw new Error('Skill metadata must be a mapping.');
-      const fields = metadata as Record<string, unknown>;
-      if (typeof fields.name === 'string' && fields.name.trim())
-        record.name = fields.name.trim();
-      if (typeof fields.description === 'string')
-        record.description = fields.description.trim();
-      if (!record.description)
-        record.issue = 'No description found in Skill metadata.';
+      if (this.disposed) return this.snapshot!;
+      if (revision === this.scanRevision) await this.reconcileWatchAnchors();
+      if (this.disposed) return this.snapshot!;
+      if (revision !== this.scanRevision) {
+        // A source mutation cancels traversal before its replacement begins.
+        // Keep progressive results only while their root is still authorized.
+        const allowed = new Set(this.sourceRoots().map((root) => root.id));
+        this.entries = new Map(
+          [...cached, ...found].filter(([, entry]) =>
+            allowed.has(entry.record.rootId),
+          ),
+        );
+        this.publishEntries(this.entries);
+        return this.snapshot!;
+      }
+      this.entries = found;
+      this.syncWatchers(progress);
+      progress.phase = 'complete';
+      progress.completedAt = new Date().toISOString();
+      progress.currentPath = null;
+      progress.restoredFromCache = false;
+      this.snapshot = {
+        ...this.snapshot!,
+        scanning: false,
+        lastScannedAt: progress.completedAt,
+        scanProgress: progress,
+      };
+      this.publishEntries(found, roots);
+      await this.saveCache();
     } catch (error) {
-      record.issue = message(error);
+      if (!this.disposed && revision === this.scanRevision) {
+        if (progress.issues.length >= MAX_SCAN_ISSUES) progress.issues.pop();
+        addIssue(progress, this.homeDir, `Discovery failed: ${message(error)}`);
+        progress.phase = 'failed';
+        progress.currentPath = null;
+        this.snapshot = {
+          ...this.snapshot!,
+          scanning: false,
+          scanProgress: progress,
+        };
+      }
     }
-    return record;
+    return this.snapshot!;
+  }
+
+  private async saveCache(): Promise<void> {
+    if (this.disposed) return;
+    const serialized = `${JSON.stringify({ version: 1, homeDir: this.homeDir, completedAt: this.snapshot!.lastScannedAt, entries: [...this.entries.values()] })}\n`;
+    const write = this.cacheWrites
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.disposed) return;
+        await mkdir(this.configDir, { recursive: true, mode: 0o700 });
+        if (this.disposed) return;
+        const temporary = path.join(
+          this.configDir,
+          `discovery-cache.${randomUUID()}.tmp`,
+        );
+        await writeFile(temporary, serialized, { mode: 0o600 });
+        await rename(
+          temporary,
+          path.join(this.configDir, 'discovery-cache.json'),
+        );
+      });
+    this.cacheWrites = write;
+    try {
+      await write;
+    } catch (error) {
+      if (!this.disposed && this.snapshot) {
+        const progress = {
+          ...this.snapshot.scanProgress,
+          issues: [...this.snapshot.scanProgress.issues],
+        };
+        addIssue(
+          progress,
+          this.configDir,
+          `Discovery cache could not be saved: ${message(error)}`,
+        );
+        this.snapshot = { ...this.snapshot, scanProgress: progress };
+      }
+    }
+  }
+
+  private dropWatch(directory: string): void {
+    this.watchers.get(directory)?.close();
+    this.watchers.delete(directory);
+    this.watchFailures.delete(directory);
+    this.watchAnchors.delete(directory);
+  }
+
+  private async reconcileWatchAnchors(): Promise<void> {
+    const allowed = new Set(this.sourceRoots().map((root) => root.id));
+    for (const [directory, anchor] of this.watchAnchors) {
+      if (!allowed.has(anchor.record.rootId)) {
+        this.dropWatch(directory);
+        continue;
+      }
+      try {
+        if (
+          (await realpath(anchor.sourcePath)) !== directory ||
+          !(await stat(directory)).isDirectory()
+        )
+          this.dropWatch(directory);
+      } catch (error) {
+        // A metadata read failure does not revoke a known directory's watch.
+        // Directory deletion or retargeting does: its old boundary is gone.
+        if (isMissing(error)) this.dropWatch(directory);
+      }
+    }
+  }
+
+  private syncWatchers(progress: ScanProgress): void {
+    for (const [directory, entry] of this.entries)
+      this.watchAnchors.set(directory, entry);
+    for (const directory of this.watchAnchors.keys()) {
+      if (this.watchers.has(directory) || this.watchFailures.has(directory))
+        continue;
+      try {
+        const watcher = watch(
+          directory,
+          { persistent: false },
+          (_event, filename) => {
+            if (
+              filename !== null &&
+              filename.toString() !== 'SKILL.md' &&
+              filename.toString() !== path.basename(directory)
+            )
+              return;
+            this.pendingRefreshes.add(directory);
+            this.scheduleRefresh();
+          },
+        );
+        watcher.on('error', (error) => {
+          watcher.close();
+          this.watchers.delete(directory);
+          this.watchFailures.add(directory);
+          if (this.disposed || !this.snapshot) return;
+          const current = {
+            ...this.snapshot.scanProgress,
+            issues: [...this.snapshot.scanProgress.issues],
+            watching: false,
+          };
+          addIssue(
+            current,
+            directory,
+            `Live metadata updates unavailable: ${message(error)}`,
+          );
+          this.snapshot = { ...this.snapshot, scanProgress: current };
+        });
+        this.watchers.set(directory, watcher);
+        // Reconcile once after watch installation: metadata may have changed
+        // between its discovery read and the native watcher becoming active.
+        this.pendingRefreshes.add(directory);
+      } catch (error) {
+        this.watchFailures.add(directory);
+        addIssue(
+          progress,
+          directory,
+          `Live metadata updates unavailable: ${message(error)}`,
+        );
+      }
+    }
+    progress.watching =
+      this.watchAnchors.size > 0 &&
+      this.watchers.size === this.watchAnchors.size &&
+      !this.watchFailures.size;
+  }
+
+  private scheduleRefresh(): void {
+    if (this.disposed || this.scanning) return;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      void this.refreshMetadata();
+    }, 180);
+    this.refreshTimer.unref();
+  }
+
+  private async refreshMetadata(): Promise<void> {
+    if (this.disposed || this.scanning || !this.snapshot) return;
+    const directories = [...this.pendingRefreshes];
+    this.pendingRefreshes.clear();
+    for (const directory of directories) {
+      const current =
+        this.entries.get(directory) ?? this.watchAnchors.get(directory);
+      if (!current || this.disposed) continue;
+      const root = this.snapshot.roots.find(
+        (candidate) => candidate.id === current.record.rootId,
+      );
+      if (!root) {
+        this.dropWatch(directory);
+        continue;
+      }
+      let sameDirectory = false;
+      let changedLocation = false;
+      try {
+        if (
+          (await realpath(current.sourcePath)) !== directory ||
+          !(await stat(directory)).isDirectory()
+        ) {
+          changedLocation = true;
+          throw new Error('The Skill location changed.');
+        }
+        sameDirectory = true;
+        const updated = await readSkill(
+          directory,
+          current.sourcePath,
+          root,
+          current,
+        );
+        if (
+          this.disposed ||
+          !this.snapshot.roots.some((candidate) => candidate.id === root.id)
+        )
+          continue;
+        this.entries.set(directory, updated);
+        this.watchAnchors.set(directory, updated);
+      } catch (error) {
+        this.entries.delete(directory);
+        if (
+          changedLocation ||
+          (!sameDirectory && isMissing(error)) ||
+          !this.snapshot.roots.some((candidate) => candidate.id === root.id)
+        )
+          this.dropWatch(directory);
+        if (!isMissing(error)) {
+          const progress: ScanProgress = {
+            ...this.snapshot.scanProgress,
+            issues: [...this.snapshot.scanProgress.issues],
+          };
+          addIssue(
+            progress,
+            directory,
+            `Skill removed from the library: ${message(error)}`,
+          );
+          this.snapshot = { ...this.snapshot, scanProgress: progress };
+        }
+      }
+    }
+    if (this.disposed) return;
+    const progress = {
+      ...this.snapshot.scanProgress,
+      issues: [...this.snapshot.scanProgress.issues],
+    };
+    this.syncWatchers(progress);
+    this.snapshot = { ...this.snapshot, scanProgress: progress };
+    this.publishEntries(this.entries);
+    await this.saveCache();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    for (const watcher of this.watchers.values()) watcher.close();
+    this.watchers.clear();
+    this.watchAnchors.clear();
+    this.pendingRefreshes.clear();
+  }
+
+  private configurationChanged(): WorkspaceSnapshot {
+    this.scanRevision += 1;
+    const previous = new Map(
+      this.snapshot!.roots.map((root) => [root.id, root]),
+    );
+    const roots = this.sourceRoots().map((root) => ({
+      ...root,
+      ...previous.get(root.id),
+    }));
+    const allowed = new Set(roots.map((root) => root.id));
+    this.entries = new Map(
+      [...this.entries].filter(([, entry]) => allowed.has(entry.record.rootId)),
+    );
+    const skills = this.snapshot!.skills.filter((skill) =>
+      allowed.has(skill.rootId),
+    );
+    this.visibleEntries = new Map(
+      [...this.visibleEntries].filter(([, entry]) =>
+        allowed.has(entry.record.rootId),
+      ),
+    );
+    for (const [directory, anchor] of this.watchAnchors) {
+      if (!allowed.has(anchor.record.rootId)) this.dropWatch(directory);
+    }
+    const progress = this.progress();
+    progress.restoredFromCache = this.snapshot!.scanProgress.restoredFromCache;
+    progress.watching =
+      this.watchAnchors.size > 0 &&
+      this.watchers.size === this.watchAnchors.size &&
+      !this.watchFailures.size;
+    this.snapshot = {
+      ...this.snapshot!,
+      scanning: true,
+      skills,
+      roots: roots.map((root) => ({
+        ...root,
+        skillCount: skills.filter((skill) => skill.rootId === root.id).length,
+      })),
+      scanProgress: progress,
+    };
+    this.beginScan();
+    return this.snapshot;
   }
 
   private async resolveSkill(id: string): Promise<SkillRecord> {
@@ -439,11 +839,40 @@ export class SkillsService {
         'Skill not found. Rescan to refresh the library.',
       );
     try {
-      if ((await realpath(skill.path)) !== skill.path)
+      const sourcePath = this.visibleEntries.get(skill.path)?.sourcePath;
+      if (
+        (await realpath(skill.path)) !== skill.path ||
+        !sourcePath ||
+        (await realpath(sourcePath)) !== skill.path
+      )
         throw new ServiceError(
           403,
           'The Skill location changed. Rescan before opening it.',
         );
+      if (skill.issue === CACHED_RECORD_ISSUE) {
+        const root = this.snapshot!.roots.find(
+          (candidate) => candidate.id === skill.rootId,
+        );
+        if (!root)
+          throw new ServiceError(
+            403,
+            'The Skill source is no longer configured.',
+          );
+        // Persisted metadata is advisory. Opening a cached record requires real
+        // readable Skill metadata; a cache file cannot authorize a plain folder.
+        const verified = await readSkill(skill.path, sourcePath, root);
+        if (!this.snapshot!.roots.some((candidate) => candidate.id === root.id))
+          throw new ServiceError(
+            403,
+            'The Skill source is no longer configured.',
+          );
+        if (this.visibleEntries.get(skill.path)?.record.rootId === root.id) {
+          this.visibleEntries.set(skill.path, verified);
+          this.entries.set(skill.path, verified);
+          this.publishEntries(this.visibleEntries);
+        }
+        return verified.record;
+      }
     } catch (error) {
       if (error instanceof ServiceError) throw error;
       throw new ServiceError(
@@ -618,8 +1047,7 @@ export class SkillsService {
       );
     this.config.roots.push(canonical);
     await this.saveConfig();
-    if (this.scanning) await this.scanning;
-    return this.rescan();
+    return this.configurationChanged();
   }
 
   async removeRoot(id: string): Promise<WorkspaceSnapshot> {
@@ -629,8 +1057,7 @@ export class SkillsService {
       throw new ServiceError(400, 'Only custom scan roots can be removed.');
     this.config.roots.splice(index, 1);
     await this.saveConfig();
-    if (this.scanning) await this.scanning;
-    return this.rescan();
+    return this.configurationChanged();
   }
 
   private async executable(name: string): Promise<string | null> {
@@ -705,7 +1132,18 @@ export class SkillsService {
       throw new ServiceError(400, 'Choose system, vscode, or zed.');
     this.config.editor = editor;
     await this.saveConfig();
-    return this.getEditor();
+    const editorSettings = await this.getEditor();
+    if (this.snapshot) {
+      this.snapshot = {
+        ...this.snapshot,
+        editor: editorSettings,
+        host: {
+          ...this.snapshot.host,
+          editorAvailable: editorSettings.available,
+        },
+      };
+    }
+    return editorSettings;
   }
 
   async openEditor(

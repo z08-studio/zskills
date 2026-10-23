@@ -22,8 +22,14 @@ Skill expertise through reading and analysis.
 - Build a local web service with a browser interface.
 - Let the service read Skills on its host, including Skills spread across
   personal, project, and tool-managed folders.
+- Automatically discover valid Skills throughout the service user's Home
+  directory, including hidden folders and repository-level locations. The
+  service's working directory is not a default scan source.
 - Let users add scan folders and inspect coverage; do not equate a successful
   scan with discovery of every Skill on the filesystem.
+- Make cached and progressively discovered results available while scanning.
+  Report unreadable locations and invalid candidates so incomplete coverage is
+  visible rather than presented as an exhaustive result.
 - Use a compact, editor-style workbench with normal sans-serif typography.
 - Show all discovered Skills in a searchable left sidebar. Show a host and scan
   overview in the main area until the user opens Skills or files in tabs.
@@ -68,14 +74,30 @@ file. A host without a suitable desktop/editor cannot complete this handoff.
 - React and TypeScript provide the browser workbench; Vite builds the UI.
 - A Node.js/Express service discovers Skills and provides read-only file
   previews. Reading a Skill never executes its instructions or scripts.
-- Default scan roots cover common personal, project, and Codex plugin-cache
-  locations. Users can add custom folders and inspect each root's scan status.
+- Discovery starts with common personal and Codex plugin-cache locations, then
+  searches the user's Home directory in the background. Hidden folders,
+  repository folders, dependency directories, and caches remain eligible;
+  discovery does not silently stop at a fixed depth or directory count.
+- A valid candidate is a readable regular `SKILL.md` within the preview size
+  limit, with YAML metadata containing nonempty string `name` and `description`
+  fields. Invalid candidates are counted with diagnostic examples rather than
+  included in the valid Skill library. This is a discovery check, not a complete
+  Agent Skills specification validator.
+- Users can add custom folders, including locations outside Home, and inspect
+  scan progress and coverage. Canonical paths deduplicate overlapping sources
+  and directory-link cycles. Broad directory links do not expand the scan into
+  unconfigured external trees; directly linked installed Skills retain their
+  own preview boundaries.
 - Host identity and canonical source paths distinguish Skills with the same name
   in different locations. Disk discovery does not imply agent enablement.
 - Scan-folder and editor preferences persist in `~/.config/zskills`, with
   `ZSKILLS_CONFIG_DIR` available to override that directory.
-- Content refresh is explicit. Automatic filesystem watching is not part of this
-  first implementation.
+- A versioned discovery cache in the same configuration directory restores the
+  previous library quickly. Cached results remain labeled during background
+  revalidation, and filesystem errors remain visible in coverage reporting.
+- Metadata changes in discovered Skill directories are watched when supported
+  by the host. Full discovery runs at startup and on explicit rescan to find new
+  locations. File-preview content is still refreshed explicitly.
 - The interface is the working prototype for review and iterative adjustment in
   Codex Explorer. The implementation does not turn every earlier wireframe idea
   into a committed feature.
