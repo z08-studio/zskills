@@ -2,8 +2,8 @@
 
 ## Identity
 
-- Product name: ZSkill Lens
-- Repository name: zskill-lens
+- Product name: ZSkills
+- Repository name: zskills
 - Product family: Z Studio
 - Interface: browser-based web app
 - Service platforms: macOS and Linux

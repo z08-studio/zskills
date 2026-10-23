@@ -1,4 +1,4 @@
-# ZSkill Lens
+# ZSkills
 
 An open-source, self-hosted web app for visually exploring, reading, and learning
 from Agent Skills.
@@ -7,7 +7,7 @@ Part of Z Studio.
 
 ## Direction
 
-ZSkill Lens helps people understand how Skills are written and organized, study
+ZSkills helps people understand how Skills are written and organized, study
 their instructions and supporting resources, and build their own expertise.
 
 Run the service on a Mac or Linux machine and open its interface in a browser.

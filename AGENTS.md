@@ -2,7 +2,7 @@
 
 ## Product context
 
-ZSkill Lens is an open-source, self-hosted web app in the Z Studio family. It
+ZSkills is an open-source, self-hosted web app in the Z Studio family. It
 helps users visually read, explore, and learn from Agent Skills. A service on
 macOS or Linux reads Skills on its host and provides a browser interface. The
 same service can run on remote machines, with SSH-based access also in scope.
