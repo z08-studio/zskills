@@ -25,3 +25,9 @@ xcuserdata/
 *.swo
 *~
 *.log
+
+# Web application dependencies and output
+node_modules/
+dist/
+.vite/
+coverage/
