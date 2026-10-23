@@ -7,23 +7,31 @@ Part of [Z08 Studio](https://github.com/z08-studio).
 
 ## Run locally
 
-Use Node.js 24 or later and npm. From the repository directory:
+Install a stable [Rust toolchain](https://rustup.rs), Node.js 24 or later, and
+npm. From the repository directory:
 
 ```sh
 npm install
 npm run dev
 ```
 
-Open [ZSkills](http://127.0.0.1:4173). One local service serves the browser
-interface and API. For a production build:
+Open [ZSkills](http://127.0.0.1:4173). Development uses Vite on port 4173 and a
+Rust API on port 4174; both bind to loopback. The development runner rebuilds and
+restarts the backend when Rust sources change, and Vite refreshes the frontend.
+For a production build:
 
 ```sh
 npm run build
 npm start
 ```
 
-The service listens on `127.0.0.1:4173`. This first implementation does not offer
-a public network listener or application authentication.
+The production Rust service serves both the UI and API on `127.0.0.1:4173`.
+After building, `./target/release/zskills` also runs directly without Node.js;
+keep `dist/client` available relative to the working directory or set
+`ZSKILLS_CLIENT_DIR` to its absolute path. Set `PORT` to change the UI or
+production port and `ZSKILLS_API_PORT` to change the development API port.
+This first implementation does not offer a public network listener or
+application authentication.
 
 ## Explore Skills
 
@@ -80,13 +88,15 @@ remote computer, so this action requires an available desktop/editor there.
 
 ## Development
 
-The UI uses React, TypeScript, and Vite. A Node.js/Express service discovers
-Skills and serves their files through the API.
+The UI uses React, TypeScript, and Vite. A Rust service using Axum discovers
+Skills, serves the API, and delivers the built UI. Discovery runs on bounded
+worker threads so filesystem work does not block HTTP requests.
 
 ```sh
 npm run typecheck
 npm test
 npm run build
+npm run lint:rust
 git diff --check
 ```
 

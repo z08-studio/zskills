@@ -5,7 +5,8 @@ proposed feature, or submit a pull request with a focused change.
 
 ## Local development
 
-Use Node.js 24 or later. Install dependencies with `npm ci`, then run
+Use Node.js 24 or later and a stable Rust toolchain with rustfmt and Clippy.
+Install frontend dependencies with `npm ci`, then run
 `npm run dev`. Read [AGENTS.md](AGENTS.md) for repository conventions and the
 [product brief](docs/product-brief.md) for confirmed requirements and open
 decisions.
@@ -21,11 +22,18 @@ npm run format:check
 npm run typecheck
 npm test
 npm run build
+npm run lint:rust
 git diff --check
 ```
 
 Describe the problem, resulting behavior, and validation in the pull request.
 Add meaningful tests for behavior changes where appropriate.
+
+The frontend stays in `src` and shared TypeScript API types stay in `shared`.
+The Rust backend is in `backend`; keep its serialized camelCase responses in
+sync with the frontend contract. Commit `Cargo.lock` for reproducible service
+builds. `npm test` runs both frontend and Rust tests, and the build produces the
+native service at `target/release/zskills` alongside `dist/client`.
 
 ## Skill data and service boundaries
 

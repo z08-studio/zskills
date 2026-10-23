@@ -20,6 +20,8 @@ Skill expertise through reading and analysis.
 ## Confirmed direction
 
 - Build a local web service with a browser interface.
+- Use Rust for the service and TypeScript for the browser interface. Optimize
+  discovery without reducing eligible Home-directory coverage.
 - Let the service read Skills on its host, including Skills spread across
   personal, project, and tool-managed folders.
 - Automatically discover valid Skills throughout the service user's Home
@@ -72,12 +74,15 @@ file. A host without a suitable desktop/editor cannot complete this handoff.
 ## First implementation
 
 - React and TypeScript provide the browser workbench; Vite builds the UI.
-- A Node.js/Express service discovers Skills and provides read-only file
+- A Rust/Axum service discovers Skills and provides read-only file
   previews. Reading a Skill never executes its instructions or scripts.
 - Discovery starts with common personal and Codex plugin-cache locations, then
   searches the user's Home directory in the background. Hidden folders,
   repository folders, dependency directories, and caches remain eligible;
   discovery does not silently stop at a fixed depth or directory count.
+- Bounded filesystem workers perform discovery away from the HTTP runtime.
+  Progress publication is throttled independently from library sorting, and
+  unchanged validated metadata can be reused within a service process.
 - A valid candidate is a readable regular `SKILL.md` within the preview size
   limit, with YAML metadata containing nonempty string `name` and `description`
   fields. Invalid candidates are counted with diagnostic examples rather than
