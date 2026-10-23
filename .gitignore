@@ -31,3 +31,6 @@ node_modules/
 dist/
 .vite/
 coverage/
+
+# Rust build output
+target/

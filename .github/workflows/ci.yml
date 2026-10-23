@@ -12,7 +12,7 @@ jobs:
   validate:
     name: Validate on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -29,10 +29,14 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Set up Rust
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
       - name: Check formatting
         run: npm run format:check
       - name: Run tests
         run: npm test
+      - name: Check Rust lints
+        run: npm run lint:rust
       - name: Build and check types
         run: npm run build
       - name: Check whitespace
