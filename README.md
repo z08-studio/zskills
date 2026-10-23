@@ -3,7 +3,7 @@
 An open-source, self-hosted web app for visually exploring, reading, and learning
 from Agent Skills.
 
-Part of Z Studio.
+Part of [Z08 Studio](https://github.com/z08-studio).
 
 ## Run locally
 
@@ -79,9 +79,19 @@ git diff --check
 ```
 
 This first version focuses on discovery, source reading, and external-editor
-handoff. Packaging and the open-source license remain open decisions.
+handoff. Distribution packaging remains an open decision.
+
+## Contributing
+
+Issues and pull requests are welcome at [z08-studio/zskills](https://github.com/z08-studio/zskills).
+Read the [contribution guide](CONTRIBUTING.md) before making changes, and use
+sanitized examples when reporting problems with local Skills.
 
 ## Project documents
 
 - [Product brief](docs/product-brief.md): confirmed decisions and open questions.
 - [Contributor guidance](AGENTS.md): working conventions for this repository.
+
+## License
+
+ZSkills is available under the [MIT License](LICENSE).

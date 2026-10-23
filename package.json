@@ -4,6 +4,15 @@
   "private": true,
   "type": "module",
   "description": "A local workbench for reading and exploring Agent Skills",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/z08-studio/zskills.git"
+  },
+  "homepage": "https://github.com/z08-studio/zskills#readme",
+  "bugs": {
+    "url": "https://github.com/z08-studio/zskills/issues"
+  },
   "engines": {
     "node": ">=24"
   },

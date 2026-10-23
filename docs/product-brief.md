@@ -4,10 +4,12 @@
 
 - Product name: ZSkills
 - Repository name: zskills
-- Product family: Z Studio
+- Product family: Z08 Studio
 - Interface: browser-based web app
 - Service platforms: macOS and Linux
 - Distribution direction: open source and self-hosted
+- Repository: https://github.com/z08-studio/zskills
+- License: MIT
 
 ## Purpose
 
@@ -38,8 +40,8 @@ Skill expertise through reading and analysis.
   through SSH port forwarding. Direct network endpoints and reading additional
   hosts over SSH remain future architecture decisions.
 - Prioritize understanding and learning from Skill content.
-- Develop the project as open-source software; license selection and public
-  repository publication are separate pending decisions.
+- Publish the project as open-source software under the MIT License in the
+  Z08 Studio GitHub organization.
 
 ## Deployment model
 
@@ -87,7 +89,7 @@ The following ideas are discussion topics, not committed features:
 - Comparing related Skills or different versions of a Skill.
 - In-browser editing, copying, installing, running, or evaluating Skills.
 - AI-assisted analysis, model providers, and cost controls.
-- Open-source license, packaging, public repository, and commercial model.
+- Distribution packaging and commercial model.
 - Single-instance and multi-instance navigation, and direct SSH file browsing.
 
 ## Technical decisions still to evaluate
