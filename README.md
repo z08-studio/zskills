@@ -90,6 +90,7 @@ sanitized examples when reporting problems with local Skills.
 ## Project documents
 
 - [Product brief](docs/product-brief.md): confirmed decisions and open questions.
+- [Brand identity](docs/brand.md): logo source and interface color usage.
 - [Contributor guidance](AGENTS.md): working conventions for this repository.
 
 ## License

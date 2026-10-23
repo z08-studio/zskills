@@ -1135,11 +1135,14 @@ export default function App() {
           }}
           aria-label="ZSkills home"
         >
-          <span className="brand-mark">
-            <span />
-            <span />
-            <span />
-          </span>
+          <img
+            className="brand-mark"
+            src="/brand/mark.svg"
+            alt=""
+            aria-hidden="true"
+            width={28}
+            height={28}
+          />
           <span>ZSkills</span>
           <span className="version-tag">WORKSPACE</span>
         </a>
@@ -1467,12 +1470,22 @@ export default function App() {
                     : 'YOUR SKILL WORKSPACE'}
                 </div>
                 <div className="overview-title-row">
-                  <div>
-                    <h1>A closer look at your Skills.</h1>
-                    <p>
-                      Explore what is on this computer. Read the source. Make it
-                      your own.
-                    </p>
+                  <div className="overview-heading">
+                    <img
+                      className="overview-brand-mark"
+                      src="/brand/mark.svg"
+                      alt=""
+                      aria-hidden="true"
+                      width={44}
+                      height={44}
+                    />
+                    <div>
+                      <h1>A closer look at your Skills.</h1>
+                      <p>
+                        Explore what is on this computer. Read the source. Make
+                        it your own.
+                      </p>
+                    </div>
                   </div>
                   <button
                     className="secondary-button"
