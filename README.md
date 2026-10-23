@@ -5,26 +5,76 @@ from Agent Skills.
 
 Part of Z Studio.
 
-## Direction
+## Run locally
 
-ZSkills helps people understand how Skills are written and organized, study
-their instructions and supporting resources, and build their own expertise.
+Use Node.js 24 or later and npm. From the repository directory:
 
-Run the service on a Mac or Linux machine and open its interface in a browser.
-Each service instance reads Skills from folders on the machine where it runs,
-including personal, project, and tool-managed locations.
+```sh
+npm install
+npm run dev
+```
 
-A remote machine can run its own instance. Access that instance through an SSH
-tunnel or an explicitly configured network endpoint. A service binds to loopback
-by default; network access requires authentication and an appropriate protected
-connection.
+Open [ZSkills](http://127.0.0.1:4173). One local service serves the browser
+interface and API. For a production build:
 
-## Status
+```sh
+npm run build
+npm start
+```
 
-The project repository has been initialized. The product direction is a local web
-service with a browser interface. Detailed features, interface design, framework,
-packaging, and the open-source license will be discussed next. Application code
-has not yet been added; the behavior above describes the intended design.
+The service listens on `127.0.0.1:4173`. This first implementation does not offer
+a public network listener or application authentication.
+
+## Explore Skills
+
+The interface is a compact, editor-style workbench with a normal sans-serif
+font. Search the Skills list on the left, expand a Skill's files, and open them
+in tabs on the right. The home view shows the connected computer, scan coverage,
+and source counts. File previews are read-only.
+
+The service scans configured folders on **the computer running the service**.
+Default locations include personal Skill folders for Codex, Claude Code,
+Gemini, and other agents, the Codex plugin cache, and project Skill folders
+relative to the directory from which the service starts. Add custom scan folders
+in the interface when your Skills live elsewhere. Coverage reports distinguish
+missing, unreadable, and scanned locations; the list is not a claim to have
+searched the entire filesystem or to show only Skills enabled in an agent.
+
+Choose the system default, VS Code, or Zed in editor settings. Use **Open in
+editor** to hand a Skill folder or the current file to that editor. The editor
+opens on the service computer. Save changes in the editor, then reload in ZSkills
+to read the latest content. Browsing and scanning do not execute Skill
+instructions or scripts and do not modify Skill source files.
+
+Scan-folder and editor preferences are stored in `~/.config/zskills`. Set
+`ZSKILLS_CONFIG_DIR` before startup to use a different configuration directory.
+
+## Use a remote computer
+
+Run ZSkills on the remote macOS or Linux computer and forward its local port:
+
+```sh
+ssh -N -L 4173:127.0.0.1:4173 user@remote-host
+```
+
+Open [the forwarded interface](http://127.0.0.1:4173) in your browser. It reads
+the remote computer's configured folders. An external editor is launched on that
+remote computer, so this action requires an available desktop/editor there.
+
+## Development
+
+The UI uses React, TypeScript, and Vite. A Node.js/Express service discovers
+Skills and serves their files through the API.
+
+```sh
+npm run typecheck
+npm test
+npm run build
+git diff --check
+```
+
+This first version focuses on discovery, source reading, and external-editor
+handoff. Packaging and the open-source license remain open decisions.
 
 ## Project documents
 
