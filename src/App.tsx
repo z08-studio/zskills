@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { buildExplorerTree, type ExplorerFolder } from './explorer-tree';
 import type {
   EditorChoice,
   FileContent,
@@ -57,9 +58,9 @@ type Tab = { id: string; skillId: string; path: string };
 type FileState = { content?: FileContent; loading?: boolean; error?: string };
 type Modal = 'sources' | 'editor' | null;
 const SOURCE_LABELS: Record<SourceKind, string> = {
-  personal: 'Personal',
+  personal: 'User directories',
   project: 'Project',
-  cache: 'Tool cache',
+  cache: 'Plugin packages',
   custom: 'Custom',
 };
 const SOURCE_ORDER: SourceKind[] = ['personal', 'project', 'cache', 'custom'];
@@ -364,10 +365,12 @@ function MarkdownPreview({
 function FileTree({
   files,
   activePath,
+  indent = 0,
   onOpen,
 }: {
   files: FileEntry[];
   activePath?: string;
+  indent?: number;
   onOpen: (path: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -409,7 +412,8 @@ function FileTree({
               key={entry.path}
               className={`tree-file ${activePath === entry.path ? 'selected' : ''}`}
               style={{
-                paddingLeft: 27 + (entry.path.split('/').length - 1) * 13,
+                paddingLeft:
+                  27 + indent + (entry.path.split('/').length - 1) * 13,
               }}
               onClick={() => {
                 if (!isDirectory) {
@@ -537,6 +541,12 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SourceKind | 'all'>('all');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [folderExpansion, setFolderExpansion] = useState<
+    Record<string, boolean>
+  >({});
+  const [searchCollapsedFolders, setSearchCollapsedFolders] = useState<
+    Set<string>
+  >(new Set());
   const [details, setDetails] = useState<Record<string, SkillDetail>>({});
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const [detailLoading, setDetailLoading] = useState<Set<string>>(new Set());
@@ -560,6 +570,39 @@ export default function App() {
     new Map<string, Promise<SkillDetail | undefined>>(),
   );
   const pendingFiles = useRef(new Set<string>());
+  const explorerFolders = useMemo(
+    () =>
+      buildExplorerTree(
+        workspace?.skills || [],
+        workspace?.roots || [],
+        workspace?.host.homeDir || '',
+      ),
+    [workspace],
+  );
+
+  useEffect(() => {
+    setSearchCollapsedFolders(new Set());
+  }, [query, sourceFilter]);
+
+  const revealSkill = (skillId: string) => {
+    const ancestors = (
+      folders: ExplorerFolder[],
+      parents: string[] = [],
+    ): string[] | undefined => {
+      for (const folder of folders) {
+        const branch = [...parents, folder.id];
+        if (folder.skills.some((skill) => skill.id === skillId)) return branch;
+        const found = ancestors(folder.folders, branch);
+        if (found) return found;
+      }
+    };
+    const ids = ancestors(explorerFolders);
+    if (ids)
+      setFolderExpansion((previous) => ({
+        ...previous,
+        ...Object.fromEntries(ids.map((id) => [id, true])),
+      }));
+  };
 
   const notify = useCallback(
     (message: string, error = false) => setToast({ message, error }),
@@ -706,6 +749,7 @@ export default function App() {
     [loadFile, loadDetail],
   );
   const openSkill = (skill: SkillRecord) => {
+    revealSkill(skill.id);
     setExpanded((previous) => new Set(previous).add(skill.id));
     openFile(skill.id, 'SKILL.md');
   };
@@ -909,6 +953,15 @@ export default function App() {
       )
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [workspace, sourceFilter, query]);
+  const filteredFolders = useMemo(
+    () =>
+      buildExplorerTree(
+        filteredSkills,
+        workspace?.roots || [],
+        workspace?.host.homeDir || '',
+      ),
+    [filteredSkills, workspace],
+  );
   const recentSkills = useMemo(
     () =>
       [...(workspace?.skills || [])]
@@ -921,6 +974,154 @@ export default function App() {
   const rootsWithErrors =
     workspace?.roots.filter((root) => root.status === 'error') || [];
   const scanBusy = rescanLoading || !!workspace?.scanning;
+
+  const renderSkill = (skill: SkillRecord, depth: number) => (
+    <div
+      key={skill.id}
+      className={`skill-group ${activeSkill?.id === skill.id ? 'has-active' : ''}`}
+    >
+      <div
+        className={`skill-row ${activeSkill?.id === skill.id ? 'active' : ''}`}
+        style={{ paddingLeft: depth * 13 }}
+      >
+        <button
+          className="expand-skill"
+          onClick={() => toggleSkill(skill)}
+          aria-label={`${expanded.has(skill.id) ? 'Collapse' : 'Expand'} ${skill.name}`}
+          aria-expanded={expanded.has(skill.id)}
+        >
+          {expanded.has(skill.id) ? (
+            <ChevronDown size={12} />
+          ) : (
+            <ChevronRight size={12} />
+          )}
+        </button>
+        <button
+          className="skill-label"
+          onClick={() => openSkill(skill)}
+          title={`${skill.description || skill.name}\n\n${skill.path}`}
+        >
+          <BookOpen size={14} />
+          <span>{skill.name}</span>
+
+          {skill.issue ? (
+            <CircleAlert
+              size={12}
+              className="warning-icon"
+              aria-label="Skill has a scan issue"
+            />
+          ) : (
+            <span
+              className={`source-dot source-${skill.source}`}
+              title={SOURCE_LABELS[skill.source]}
+            />
+          )}
+        </button>
+      </div>
+      {expanded.has(skill.id) && (
+        <>
+          {detailLoading.has(skill.id) && !details[skill.id] ? (
+            <div className="tree-state">
+              <LoaderCircle size={12} className="spin" /> Loading files…
+            </div>
+          ) : detailErrors[skill.id] ? (
+            <div className="tree-state error-text">
+              <CircleAlert size={12} />
+              <span>{detailErrors[skill.id]}</span>
+              <button
+                className="small-link"
+                onClick={() => void loadDetail(skill.id, true)}
+              >
+                Retry
+              </button>
+            </div>
+          ) : details[skill.id] ? (
+            <FileTree
+              files={details[skill.id].files}
+              indent={depth * 13}
+              activePath={
+                activeSkill?.id === skill.id ? activeTab?.path : undefined
+              }
+              onOpen={(path) => openFile(skill.id, path)}
+            />
+          ) : (
+            <div className="tree-state">
+              <button
+                className="small-link"
+                onClick={() => void loadDetail(skill.id)}
+              >
+                Load files
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+
+  const renderFolder = (folder: ExplorerFolder, depth = 0): ReactNode => {
+    const searching = Boolean(query.trim());
+    const isOpen = searching
+      ? !searchCollapsedFolders.has(folder.id)
+      : (folderExpansion[folder.id] ?? folder.isRoot);
+    return (
+      <div
+        key={folder.id}
+        className={`explorer-folder ${folder.isRoot ? 'source-folder' : ''}`}
+      >
+        <button
+          className={`folder-row ${folder.isRoot ? 'root-folder-row' : ''}`}
+          style={{ paddingLeft: 12 + depth * 13 }}
+          title={folder.path}
+          aria-label={`${isOpen ? 'Collapse' : 'Expand'} folder ${folder.name}`}
+          aria-expanded={isOpen}
+          onClick={() => {
+            if (searching) {
+              setSearchCollapsedFolders((previous) => {
+                const next = new Set(previous);
+                if (next.has(folder.id)) next.delete(folder.id);
+                else next.add(folder.id);
+                return next;
+              });
+            } else {
+              setFolderExpansion((previous) => ({
+                ...previous,
+                [folder.id]: !isOpen,
+              }));
+            }
+          }}
+        >
+          {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          {isOpen ? <FolderOpen size={14} /> : <Folder size={14} />}
+          <span className="folder-name">{folder.name}</span>
+          <span className="folder-skill-count" title={`${folder.count} Skills`}>
+            {folder.count}
+          </span>
+        </button>
+        {isOpen && (
+          <div role="group" aria-label={`${folder.name} contents`}>
+            {folder.folders.map((child) => renderFolder(child, depth + 1))}
+            {folder.skills.map((skill) => renderSkill(skill, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const collapseExplorer = () => {
+    const ids: string[] = [];
+    const visit = (folders: ExplorerFolder[]) => {
+      for (const folder of folders) {
+        ids.push(folder.id);
+        visit(folder.folders);
+      }
+    };
+    visit(explorerFolders);
+    visit(filteredFolders);
+    setExpanded(new Set());
+    setFolderExpansion(Object.fromEntries(ids.map((id) => [id, false])));
+    setSearchCollapsedFolders(new Set(ids));
+  };
 
   return (
     <div className={`app ${sidebarVisible ? '' : 'sidebar-hidden'}`}>
@@ -1064,11 +1265,9 @@ export default function App() {
             </span>
             <button
               className="icon-button tiny"
-              onClick={() => {
-                setExpanded(new Set());
-              }}
-              title="Collapse all Skills"
-              aria-label="Collapse all Skills"
+              onClick={collapseExplorer}
+              title="Collapse all folders"
+              aria-label="Collapse all folders"
             >
               <ArrowDownToLine size={13} />
             </button>
@@ -1110,15 +1309,14 @@ export default function App() {
                   onClick={() => setSourceFilter(kind)}
                   title={`${SOURCE_LABELS[kind]} · ${count} Skills`}
                 >
-                  {kind === 'cache' ? 'Cache' : SOURCE_LABELS[kind]}{' '}
-                  <span>{count}</span>
+                  {SOURCE_LABELS[kind]} <span>{count}</span>
                 </button>
               ))}
           </div>
           <div className="explorer-section-heading">
             <ChevronDown size={12} />
-            <span>SKILLS</span>
-            <span>{filteredSkills.length}</span>
+            <span>FOLDERS</span>
+            <span>{filteredSkills.length} Skills</span>
           </div>
           <div className="skill-list">
             {loading ? (
@@ -1138,94 +1336,7 @@ export default function App() {
                 </button>
               </div>
             ) : filteredSkills.length ? (
-              filteredSkills.map((skill) => (
-                <div
-                  key={skill.id}
-                  className={`skill-group ${activeSkill?.id === skill.id ? 'has-active' : ''}`}
-                >
-                  <div
-                    className={`skill-row ${activeSkill?.id === skill.id ? 'active' : ''}`}
-                  >
-                    <button
-                      className="expand-skill"
-                      onClick={() => toggleSkill(skill)}
-                      aria-label={`${expanded.has(skill.id) ? 'Collapse' : 'Expand'} ${skill.name}`}
-                      aria-expanded={expanded.has(skill.id)}
-                    >
-                      {expanded.has(skill.id) ? (
-                        <ChevronDown size={12} />
-                      ) : (
-                        <ChevronRight size={12} />
-                      )}
-                    </button>
-                    <button
-                      className="skill-label"
-                      onClick={() => openSkill(skill)}
-                      title={`${skill.description || skill.name}\n\n${skill.path}`}
-                    >
-                      <BookOpen size={14} />
-                      <span>{skill.name}</span>
-                      {duplicateNames.has(skill.name) && (
-                        <span className="duplicate-source" title={skill.path}>
-                          {skillContexts[skill.id]}
-                        </span>
-                      )}
-                      {skill.issue ? (
-                        <CircleAlert
-                          size={12}
-                          className="warning-icon"
-                          aria-label="Skill has a scan issue"
-                        />
-                      ) : (
-                        <span
-                          className={`source-dot source-${skill.source}`}
-                          title={SOURCE_LABELS[skill.source]}
-                        />
-                      )}
-                    </button>
-                  </div>
-                  {expanded.has(skill.id) && (
-                    <>
-                      {detailLoading.has(skill.id) && !details[skill.id] ? (
-                        <div className="tree-state">
-                          <LoaderCircle size={12} className="spin" /> Loading
-                          files…
-                        </div>
-                      ) : detailErrors[skill.id] ? (
-                        <div className="tree-state error-text">
-                          <CircleAlert size={12} />
-                          <span>{detailErrors[skill.id]}</span>
-                          <button
-                            className="small-link"
-                            onClick={() => void loadDetail(skill.id, true)}
-                          >
-                            Retry
-                          </button>
-                        </div>
-                      ) : details[skill.id] ? (
-                        <FileTree
-                          files={details[skill.id].files}
-                          activePath={
-                            activeSkill?.id === skill.id
-                              ? activeTab?.path
-                              : undefined
-                          }
-                          onOpen={(path) => openFile(skill.id, path)}
-                        />
-                      ) : (
-                        <div className="tree-state">
-                          <button
-                            className="small-link"
-                            onClick={() => void loadDetail(skill.id)}
-                          >
-                            Load files
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              ))
+              filteredFolders.map((folder) => renderFolder(folder))
             ) : (
               <div className="sidebar-state">
                 <Search size={20} />
@@ -1477,11 +1588,11 @@ export default function App() {
                               <span>{SOURCE_LABELS[kind]}</span>
                               <span className="source-row-description">
                                 {kind === 'personal'
-                                  ? 'Your installed Skills'
+                                  ? 'User-level Skill folders'
                                   : kind === 'project'
                                     ? 'Project directories'
                                     : kind === 'cache'
-                                      ? 'Managed by your tools'
+                                      ? 'Skills from plugin packages'
                                       : 'Folders you added'}
                               </span>
                               <strong>{count}</strong>
@@ -1619,6 +1730,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       setSidebarVisible(true);
+                      revealSkill(activeTab.skillId);
                       setExpanded((previous) =>
                         new Set(previous).add(activeTab.skillId),
                       );

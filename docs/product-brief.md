@@ -25,6 +25,10 @@ Skill expertise through reading and analysis.
 - Use a compact, editor-style workbench with normal sans-serif typography.
 - Show all discovered Skills in a searchable left sidebar. Show a host and scan
   overview in the main area until the user opens Skills or files in tabs.
+- Organize the explorer by actual source folders, including collapsible package
+  and version directories. Search preserves the matching folder hierarchy.
+- Label directory-based source filters as User directories and Plugin packages;
+  these labels describe discovery locations, not authorship or enablement.
 - Support multiple reading tabs so users can retain context while switching
   between files and Skills.
 - Hand a Skill folder or the current file to an external editor on the service

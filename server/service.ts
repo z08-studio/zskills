@@ -184,7 +184,7 @@ export class SkillsService {
         kind: 'personal',
       },
       {
-        label: 'Plugin cache',
+        label: 'Plugin packages',
         path: path.join(this.homeDir, '.codex/plugins/cache'),
         kind: 'cache',
       },

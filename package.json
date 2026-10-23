@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.server.json",
     "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node dist/server/server/index.js",
-    "test": "tsx --test server/*.test.ts",
+    "test": "tsx --test server/*.test.ts src/*.test.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

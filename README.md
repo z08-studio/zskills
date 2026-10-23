@@ -28,8 +28,10 @@ a public network listener or application authentication.
 ## Explore Skills
 
 The interface is a compact, editor-style workbench with a normal sans-serif
-font. Search the Skills list on the left, expand a Skill's files, and open them
-in tabs on the right. The home view shows the connected computer, scan coverage,
+font. Browse Skills under their actual source folders on the left, expand a
+Skill's files, and open them in tabs on the right. Nested folders can be
+collapsed; single-child folder paths are compacted, and search keeps matching
+Skills in their folder context. The home view shows the connected computer, scan coverage,
 and source counts. File previews are read-only.
 
 The service scans configured folders on **the computer running the service**.
@@ -39,6 +41,9 @@ relative to the directory from which the service starts. Add custom scan folders
 in the interface when your Skills live elsewhere. Coverage reports distinguish
 missing, unreadable, and scanned locations; the list is not a claim to have
 searched the entire filesystem or to show only Skills enabled in an agent.
+
+The **User directories** and **Plugin packages** filters describe discovery
+locations. They do not identify who wrote a Skill or whether an agent enables it.
 
 Choose the system default, VS Code, or Zed in editor settings. Use **Open in
 editor** to hand a Skill folder or the current file to that editor. The editor

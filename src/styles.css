@@ -403,6 +403,49 @@ input {
   scrollbar-width: thin;
   scrollbar-color: #d8dbe4 transparent;
 }
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 29px;
+  padding: 0 12px;
+  text-align: left;
+  color: #677386;
+  font-size: 11px;
+}
+.folder-row:hover {
+  background: #eeeff5;
+  color: #5c568e;
+}
+.folder-row > svg {
+  color: #9298ac;
+}
+.folder-row .folder-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.folder-skill-count {
+  font-size: 10px;
+  color: #8a91a0;
+  font-variant-numeric: tabular-nums;
+}
+.root-folder-row {
+  min-height: 32px;
+  background: #f0f2f7;
+  font-weight: 500;
+  color: #586477;
+}
+.root-folder-row .folder-name {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 10px;
+}
+.source-folder + .source-folder {
+  margin-top: 7px;
+}
 .skill-row {
   display: flex;
   height: 29px;
