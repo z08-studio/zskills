@@ -4,11 +4,11 @@ import {
   useMemo,
   useRef,
   useState,
+  memo,
   type ReactNode,
 } from 'react';
 import {
   ArrowDownToLine,
-  ArrowRight,
   ArrowUpRight,
   BookOpen,
   Check,
@@ -60,10 +60,17 @@ type Modal = 'sources' | 'editor' | null;
 const SOURCE_LABELS: Record<SourceKind, string> = {
   personal: 'User directories',
   project: 'Project',
+  home: 'Home directories',
   cache: 'Plugin packages',
   custom: 'Custom',
 };
-const SOURCE_ORDER: SourceKind[] = ['personal', 'project', 'cache', 'custom'];
+const SOURCE_ORDER: SourceKind[] = [
+  'home',
+  'personal',
+  'cache',
+  'custom',
+  'project',
+];
 const EDITORS: {
   value: EditorChoice;
   label: string;
@@ -111,6 +118,48 @@ async function api<T>(path: string, options?: RequestInit): Promise<T> {
         `The request failed (${response.status}).`,
     );
   return body as T;
+}
+
+function retainWorkspaceData(
+  previous: WorkspaceSnapshot | undefined,
+  next: WorkspaceSnapshot,
+): WorkspaceSnapshot {
+  if (!previous) return next;
+  const sameSkills =
+    previous.skills.length === next.skills.length &&
+    previous.skills.every((skill, index) => {
+      const other = next.skills[index]!;
+      return (
+        skill.id === other.id &&
+        skill.name === other.name &&
+        skill.description === other.description &&
+        skill.path === other.path &&
+        skill.rootId === other.rootId &&
+        skill.source === other.source &&
+        skill.modifiedAt === other.modifiedAt &&
+        skill.issue === other.issue
+      );
+    });
+  const sameRoots =
+    previous.roots.length === next.roots.length &&
+    previous.roots.every((root, index) => {
+      const other = next.roots[index]!;
+      return (
+        root.id === other.id &&
+        root.label === other.label &&
+        root.path === other.path &&
+        root.kind === other.kind &&
+        root.status === other.status &&
+        root.skillCount === other.skillCount &&
+        root.error === other.error &&
+        root.removable === other.removable
+      );
+    });
+  return {
+    ...next,
+    skills: sameSkills ? previous.skills : next.skills,
+    roots: sameRoots ? previous.roots : next.roots,
+  };
 }
 
 function shortPath(path: string, homeDir?: string) {
@@ -287,7 +336,7 @@ function SkillImage({
   );
 }
 
-function MarkdownPreview({
+const MarkdownPreview = memo(function MarkdownPreview({
   content,
   skillId,
   path,
@@ -360,7 +409,7 @@ function MarkdownPreview({
       </ReactMarkdown>
     </article>
   );
-}
+});
 
 function FileTree({
   files,
@@ -534,6 +583,143 @@ function Dialog({
   );
 }
 
+function ScanCoverage({
+  workspace,
+  detailed = false,
+  onDetails,
+  pending = false,
+}: {
+  workspace: WorkspaceSnapshot;
+  detailed?: boolean;
+  onDetails?: () => void;
+  pending?: boolean;
+}) {
+  const progress = workspace.scanProgress;
+  const discovering = pending || workspace.scanning;
+  const interrupted = !discovering && progress.phase !== 'complete';
+  const incomplete =
+    progress.unreadableDirectories > 0 ||
+    progress.externalLinksSkipped > 0 ||
+    workspace.roots.some((root) => ['partial', 'error'].includes(root.status));
+  const cached = progress.restoredFromCache && progress.phase !== 'complete';
+  const failure = interrupted ? progress.issues.at(-1) : undefined;
+  const issues = progress.issues.slice(0, 8);
+  const title = discovering
+    ? progress.phase === 'quick'
+      ? 'Checking familiar Skill folders'
+      : 'Searching your Home directory'
+    : interrupted
+      ? 'Search interrupted'
+      : incomplete
+        ? 'Search finished with gaps'
+        : 'Search complete';
+
+  return (
+    <section
+      className={`scan-coverage ${incomplete || interrupted ? 'has-warning' : ''}`}
+      aria-label="Discovery and coverage"
+    >
+      <div className="scan-coverage-heading">
+        {discovering ? (
+          <LoaderCircle size={14} className="spin" />
+        ) : incomplete || interrupted ? (
+          <CircleAlert size={14} />
+        ) : (
+          <CheckCheck size={14} />
+        )}
+        <strong>{title}</strong>
+        {cached && (
+          <span className="cached-status">Cached · not yet verified</span>
+        )}
+        {!discovering && !interrupted && progress.watching && (
+          <span className="watch-status">Watching discovered Skills</span>
+        )}
+        {onDetails && (
+          <button className="small-link" onClick={onDetails}>
+            Coverage <ArrowUpRight size={12} />
+          </button>
+        )}
+      </div>
+      <div className="scan-counts" role="status">
+        <span>
+          <strong>{progress.directoriesScanned.toLocaleString()}</strong>{' '}
+          folders checked
+        </span>
+        <span>
+          <strong>{workspace.skills.length.toLocaleString()}</strong>{' '}
+          {cached || interrupted ? 'Skills available' : 'valid Skills found'}
+        </span>
+        <span>
+          <strong>{progress.invalidSkills.toLocaleString()}</strong> invalid
+          candidates
+        </span>
+      </div>
+      <p>
+        {interrupted
+          ? 'The search stopped before it finished. Your available results and open files are preserved. Rescan to try again.'
+          : cached
+            ? 'Saved results are available while this search verifies them. Keep reading as fresh results arrive.'
+            : discovering
+              ? 'Skills appear as they are found. You can search and read while discovery continues.'
+              : 'Searched Home and your configured folders. Browsing does not run or modify Skills.'}
+      </p>
+      {failure && (
+        <div className="scan-failure" role="alert">
+          <span>{failure.message}</span>
+          <code>{shortPath(failure.path, workspace.host.homeDir)}</code>
+        </div>
+      )}
+      {discovering && progress.currentPath && (
+        <code className="scan-current-path" title={progress.currentPath}>
+          Checking {shortPath(progress.currentPath, workspace.host.homeDir)}
+        </code>
+      )}
+      {incomplete && (
+        <div className="coverage-warnings">
+          {progress.unreadableDirectories > 0 && (
+            <span>
+              {progress.unreadableDirectories.toLocaleString()} location
+              {progress.unreadableDirectories === 1 ? '' : 's'} could not be
+              read.
+            </span>
+          )}
+          {progress.externalLinksSkipped > 0 && (
+            <span>
+              {progress.externalLinksSkipped.toLocaleString()} link
+              {progress.externalLinksSkipped === 1 ? '' : 's'} outside the
+              searched folders skipped. Add their target folder to include them.
+            </span>
+          )}
+          {!progress.unreadableDirectories &&
+            workspace.roots.some((root) =>
+              ['partial', 'error'].includes(root.status),
+            ) && <span>Some scan folders were only partly read.</span>}
+        </div>
+      )}
+      {detailed && (
+        <p className="scan-candidate-note">
+          {progress.candidatesChecked.toLocaleString()} SKILL.md candidates
+          checked. Invalid candidates are excluded from the library.
+        </p>
+      )}
+      {detailed && issues.length > 0 && (
+        <details className="coverage-issues">
+          <summary>Inspect paths and reasons ({issues.length} shown)</summary>
+          <ul>
+            {issues.map((issue, index) => (
+              <li key={`${issue.path}:${index}`}>
+                <code>{shortPath(issue.path, workspace.host.homeDir)}</code>
+                <span>{issue.message}</span>
+              </li>
+            ))}
+          </ul>
+          <p>Showing a sample of issues from this search.</p>
+        </details>
+      )}
+    </section>
+  );
+}
+
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>();
   const [loading, setLoading] = useState(true);
@@ -570,6 +756,12 @@ export default function App() {
     new Map<string, Promise<SkillDetail | undefined>>(),
   );
   const pendingFiles = useRef(new Set<string>());
+  const workspaceRequestPending = useRef(false);
+  const workspaceMutationPending = useRef(false);
+  const workspaceRequestVersion = useRef(0);
+  const lastCompletedScan = useRef<string | null>(null);
+  const scanObserved = useRef(false);
+  const notifyOnScanComplete = useRef(false);
   const explorerFolders = useMemo(
     () =>
       buildExplorerTree(
@@ -577,7 +769,7 @@ export default function App() {
         workspace?.roots || [],
         workspace?.host.homeDir || '',
       ),
-    [workspace],
+    [workspace?.skills, workspace?.roots, workspace?.host.homeDir],
   );
 
   useEffect(() => {
@@ -613,13 +805,25 @@ export default function App() {
     setModalError(undefined);
   }, []);
   const loadWorkspace = useCallback(async (initial = false) => {
+    if (workspaceRequestPending.current || workspaceMutationPending.current)
+      return;
+    workspaceRequestPending.current = true;
+    const requestVersion = workspaceRequestVersion.current;
     if (initial) setLoading(true);
     try {
-      setWorkspace(await api<WorkspaceSnapshot>('/workspace'));
+      const next = await api<WorkspaceSnapshot>('/workspace');
+      if (
+        requestVersion !== workspaceRequestVersion.current ||
+        workspaceMutationPending.current
+      )
+        return;
+      setWorkspace((previous) => retainWorkspaceData(previous, next));
       setWorkspaceError(undefined);
     } catch (error) {
-      setWorkspaceError((error as Error).message);
+      if (requestVersion === workspaceRequestVersion.current)
+        setWorkspaceError((error as Error).message);
     } finally {
+      workspaceRequestPending.current = false;
       setLoading(false);
     }
   }, []);
@@ -627,11 +831,15 @@ export default function App() {
     void loadWorkspace(true);
   }, [loadWorkspace]);
   useEffect(() => {
-    const interval = window.setInterval(() => {
-      void loadWorkspace();
-    }, 30000);
+    if (mutationLoading || rescanLoading) return;
+    const interval = window.setInterval(
+      () => {
+        void loadWorkspace();
+      },
+      workspace?.scanning ? 1000 : 30000,
+    );
     return () => window.clearInterval(interval);
-  }, [loadWorkspace]);
+  }, [loadWorkspace, workspace?.scanning, mutationLoading, rescanLoading]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(
@@ -733,6 +941,82 @@ export default function App() {
     [contents],
   );
 
+  useEffect(() => {
+    if (!workspace) return;
+    if (workspace.scanning) {
+      scanObserved.current = true;
+      return;
+    }
+    if (workspace.scanProgress.phase !== 'complete') {
+      scanObserved.current = false;
+      if (notifyOnScanComplete.current) {
+        notify(
+          'Search interrupted. Your available results are preserved.',
+          true,
+        );
+        notifyOnScanComplete.current = false;
+      }
+      return;
+    }
+    const completedAt =
+      workspace.scanProgress.completedAt || workspace.lastScannedAt;
+    if (!completedAt || lastCompletedScan.current === completedAt) return;
+    const previousCompletedAt = lastCompletedScan.current;
+    lastCompletedScan.current = completedAt;
+    if (
+      !previousCompletedAt &&
+      !scanObserved.current &&
+      !notifyOnScanComplete.current
+    )
+      return;
+    scanObserved.current = false;
+    const skillIds = new Set(workspace.skills.map((skill) => skill.id));
+    const incomplete =
+      workspace.scanProgress.unreadableDirectories > 0 ||
+      workspace.roots.some((root) =>
+        ['partial', 'error'].includes(root.status),
+      );
+    // An unreadable folder cannot establish that a previously open Skill is gone.
+    if (!incomplete) {
+      setTabs((previous) =>
+        previous.filter((tab) => skillIds.has(tab.skillId)),
+      );
+      setActiveId((previous) =>
+        tabs.some((tab) => tab.id === previous && !skillIds.has(tab.skillId))
+          ? 'home'
+          : previous,
+      );
+    }
+    setDetails((previous) =>
+      incomplete
+        ? Object.fromEntries(
+            Object.entries(previous).filter(([id]) => !skillIds.has(id)),
+          )
+        : {},
+    );
+    setDetailErrors({});
+    setContents((previous) =>
+      incomplete
+        ? Object.fromEntries(
+            Object.entries(previous).filter(([id]) =>
+              tabs.some((tab) => tab.id === id && !skillIds.has(tab.skillId)),
+            ),
+          )
+        : {},
+    );
+    const selected = tabs.find((tab) => tab.id === activeId);
+    if (selected && skillIds.has(selected.skillId)) {
+      void loadDetail(selected.skillId, true);
+      void loadFile(selected.skillId, selected.path, true);
+    }
+    if (notifyOnScanComplete.current) {
+      notify(
+        `Search complete · ${workspace.skills.length} valid Skills${incomplete || workspace.scanProgress.externalLinksSkipped ? ' · Review coverage' : ''}`,
+      );
+      notifyOnScanComplete.current = false;
+    }
+  }, [workspace, tabs, activeId, loadDetail, loadFile, notify]);
+
   const openFile = useCallback(
     (skillId: string, path: string) => {
       const id = fileKey(skillId, path);
@@ -769,68 +1053,75 @@ export default function App() {
       setActiveId(tabs[index - 1]?.id || tabs[index + 1]?.id || 'home');
   };
   const rescan = async () => {
+    if (workspaceMutationPending.current) return;
+    workspaceMutationPending.current = true;
+    workspaceRequestVersion.current += 1;
+    notifyOnScanComplete.current = true;
     setRescanLoading(true);
     setModalError(undefined);
     try {
       const next = await api<WorkspaceSnapshot>('/rescan', { method: 'POST' });
-      setWorkspace(next);
+      setWorkspace((previous) => retainWorkspaceData(previous, next));
       setWorkspaceError(undefined);
-      setDetails({});
-      setDetailErrors({});
-      setContents({});
-      const selected = tabs.find((tab) => tab.id === activeId);
-      if (selected) {
-        void loadDetail(selected.skillId, true);
-        void loadFile(selected.skillId, selected.path, true);
-      }
-      notify(`Scan complete · ${next.skills.length} Skills found`);
     } catch (error) {
+      notifyOnScanComplete.current = false;
       notify((error as Error).message, true);
     } finally {
+      workspaceMutationPending.current = false;
       setRescanLoading(false);
     }
   };
   const addRoot = async () => {
+    if (workspaceMutationPending.current) return;
     if (!newRoot.trim().startsWith('/')) {
       setModalError(
-        'Enter an absolute folder path, such as /Users/you/project/.agents/skills.',
+        'Enter an absolute folder path, such as /Volumes/Work/skills.',
       );
       return;
     }
+    workspaceMutationPending.current = true;
+    workspaceRequestVersion.current += 1;
     setMutationLoading(true);
     setModalError(undefined);
     try {
-      setWorkspace(
-        await api<WorkspaceSnapshot>('/roots', {
-          method: 'POST',
-          body: JSON.stringify({ path: newRoot.trim() }),
-        }),
-      );
+      const next = await api<WorkspaceSnapshot>('/roots', {
+        method: 'POST',
+        body: JSON.stringify({ path: newRoot.trim() }),
+      });
+      setWorkspace((previous) => retainWorkspaceData(previous, next));
       setNewRoot('');
       notify('Scan folder added');
     } catch (error) {
       setModalError((error as Error).message);
     } finally {
+      workspaceMutationPending.current = false;
       setMutationLoading(false);
     }
   };
   const removeRoot = async (rootId: string) => {
+    if (workspaceMutationPending.current) return;
+    workspaceMutationPending.current = true;
+    workspaceRequestVersion.current += 1;
     setMutationLoading(true);
     setModalError(undefined);
     try {
-      setWorkspace(
-        await api<WorkspaceSnapshot>(`/roots/${encodeURIComponent(rootId)}`, {
-          method: 'DELETE',
-        }),
+      const next = await api<WorkspaceSnapshot>(
+        `/roots/${encodeURIComponent(rootId)}`,
+        { method: 'DELETE', body: '{}' },
       );
+      setWorkspace((previous) => retainWorkspaceData(previous, next));
       notify('Scan folder removed');
     } catch (error) {
       setModalError((error as Error).message);
     } finally {
+      workspaceMutationPending.current = false;
       setMutationLoading(false);
     }
   };
   const setEditor = async (editor: EditorChoice) => {
+    if (workspaceMutationPending.current) return;
+    workspaceMutationPending.current = true;
+    workspaceRequestVersion.current += 1;
     setMutationLoading(true);
     setModalError(undefined);
     try {
@@ -844,6 +1135,7 @@ export default function App() {
     } catch (error) {
       setModalError((error as Error).message);
     } finally {
+      workspaceMutationPending.current = false;
       setMutationLoading(false);
     }
   };
@@ -852,6 +1144,12 @@ export default function App() {
     workspace?.skills.find((skill) => skill.id === activeTab?.skillId) ||
     (activeTab && details[activeTab.skillId]?.skill);
   const currentFile = contents[activeId];
+  const openRelatedFile = useCallback(
+    (path: string) => {
+      if (activeTab) openFile(activeTab.skillId, path);
+    },
+    [activeTab, openFile],
+  );
   const openInEditor = async (scope: 'skill' | 'file') => {
     if (!activeTab) return;
     setOpenLoading(true);
@@ -892,54 +1190,66 @@ export default function App() {
         count:
           workspace?.skills.filter((skill) => skill.source === kind).length ||
           0,
-      })),
-    [workspace],
+      })).filter(({ kind, count }) => kind !== 'project' || count > 0),
+    [workspace?.skills],
   );
-  const duplicateNames = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const skill of workspace?.skills || [])
-      counts.set(skill.name, (counts.get(skill.name) || 0) + 1);
-    return new Set(
-      [...counts].filter(([, count]) => count > 1).map(([name]) => name),
-    );
-  }, [workspace]);
+  const skillsByName = useMemo(() => {
+    const groups = new Map<string, SkillRecord[]>();
+    for (const skill of workspace?.skills || []) {
+      const group = groups.get(skill.name);
+      if (group) group.push(skill);
+      else groups.set(skill.name, [skill]);
+    }
+    return groups;
+  }, [workspace?.skills]);
+  const duplicateNames = useMemo(
+    () =>
+      new Set(
+        [...skillsByName]
+          .filter(([, skills]) => skills.length > 1)
+          .map(([name]) => name),
+      ),
+    [skillsByName],
+  );
   const skillContexts = useMemo(() => {
     const contexts: Record<string, string> = {};
-    for (const skill of workspace?.skills || []) {
-      const peers =
-        workspace?.skills.filter((other) => other.name === skill.name) || [];
+    const rootLabels = new Map(
+      workspace?.roots.map((root) => [root.id, root.label]),
+    );
+    for (const peers of skillsByName.values()) {
       if (peers.length < 2) continue;
-      const rootLabel =
-        workspace?.roots.find((root) => root.id === skill.rootId)?.label ||
-        SOURCE_LABELS[skill.source];
-      const hasSameLabel = peers.some(
-        (other) =>
-          other.id !== skill.id &&
-          (workspace?.roots.find((root) => root.id === other.rootId)?.label ||
-            SOURCE_LABELS[other.source]) === rootLabel,
-      );
-      if (!hasSameLabel) {
-        contexts[skill.id] = rootLabel;
-        continue;
-      }
-      const parent = skill.path.split('/').slice(0, -1);
-      let suffix = parent.slice(-1).join('/');
-      for (let depth = 1; depth <= parent.length; depth++) {
-        suffix = parent.slice(-depth).join('/');
-        if (
-          !peers.some(
-            (other) =>
-              other.id !== skill.id &&
-              other.path.split('/').slice(0, -1).slice(-depth).join('/') ===
-                suffix,
+      for (const skill of peers) {
+        const rootLabel =
+          rootLabels.get(skill.rootId) || SOURCE_LABELS[skill.source];
+        const hasSameLabel = peers.some(
+          (other) =>
+            other.id !== skill.id &&
+            (rootLabels.get(other.rootId) || SOURCE_LABELS[other.source]) ===
+              rootLabel,
+        );
+        if (!hasSameLabel) {
+          contexts[skill.id] = rootLabel;
+          continue;
+        }
+        const parent = skill.path.split('/').slice(0, -1);
+        let suffix = parent.slice(-1).join('/');
+        for (let depth = 1; depth <= parent.length; depth++) {
+          suffix = parent.slice(-depth).join('/');
+          if (
+            !peers.some(
+              (other) =>
+                other.id !== skill.id &&
+                other.path.split('/').slice(0, -1).slice(-depth).join('/') ===
+                  suffix,
+            )
           )
-        )
-          break;
+            break;
+        }
+        contexts[skill.id] = suffix;
       }
-      contexts[skill.id] = suffix;
     }
     return contexts;
-  }, [workspace]);
+  }, [skillsByName, workspace?.roots]);
   const filteredSkills = useMemo(() => {
     const search = query.trim().toLowerCase();
     return (workspace?.skills || [])
@@ -952,7 +1262,7 @@ export default function App() {
               .includes(search)),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [workspace, sourceFilter, query]);
+  }, [workspace?.skills, sourceFilter, query]);
   const filteredFolders = useMemo(
     () =>
       buildExplorerTree(
@@ -960,19 +1270,19 @@ export default function App() {
         workspace?.roots || [],
         workspace?.host.homeDir || '',
       ),
-    [filteredSkills, workspace],
+    [filteredSkills, workspace?.roots, workspace?.host.homeDir],
   );
   const recentSkills = useMemo(
     () =>
       [...(workspace?.skills || [])]
         .sort((a, b) => (b.modifiedAt || '').localeCompare(a.modifiedAt || ''))
         .slice(0, 7),
-    [workspace],
+    [workspace?.skills],
   );
   const activeRoots =
-    workspace?.roots.filter((root) => root.status === 'ready').length || 0;
-  const rootsWithErrors =
-    workspace?.roots.filter((root) => root.status === 'error') || [];
+    workspace?.roots.filter((root) =>
+      ['ready', 'partial'].includes(root.status),
+    ).length || 0;
   const scanBusy = rescanLoading || !!workspace?.scanning;
 
   const renderSkill = (skill: SkillRecord, depth: number) => (
@@ -1108,6 +1418,28 @@ export default function App() {
     );
   };
 
+  // Progress counters can update without rebuilding a large explorer tree.
+  const explorerContents = useMemo(
+    () => filteredFolders.map((folder) => renderFolder(folder)),
+    [
+      filteredFolders,
+      explorerFolders,
+      query,
+      searchCollapsedFolders,
+      folderExpansion,
+      expanded,
+      activeSkill?.id,
+      activeTab?.path,
+      detailLoading,
+      detailErrors,
+      details,
+      duplicateNames,
+      skillContexts,
+      loadDetail,
+      openFile,
+    ],
+  );
+
   const collapseExplorer = () => {
     const ids: string[] = [];
     const visit = (folders: ExplorerFolder[]) => {
@@ -1181,7 +1513,7 @@ export default function App() {
           <button
             className={`icon-button ${scanBusy ? 'busy' : ''}`}
             onClick={() => void rescan()}
-            disabled={scanBusy || !workspace}
+            disabled={scanBusy || mutationLoading || !workspace}
             title="Rescan all folders"
             aria-label="Rescan all folders"
           >
@@ -1339,19 +1671,27 @@ export default function App() {
                 </button>
               </div>
             ) : filteredSkills.length ? (
-              filteredFolders.map((folder) => renderFolder(folder))
+              explorerContents
             ) : (
               <div className="sidebar-state">
                 <Search size={20} />
                 <strong>
                   {workspace.skills.length
                     ? 'No matching Skills'
-                    : 'No Skills found'}
+                    : workspace.scanning
+                      ? 'Searching for Skills…'
+                      : workspace.scanProgress.phase !== 'complete'
+                        ? 'Search interrupted'
+                        : 'No Skills found'}
                 </strong>
                 <span>
                   {workspace.skills.length
                     ? 'Try another name or source.'
-                    : 'Add a folder that contains Skills.'}
+                    : workspace.scanning
+                      ? 'Home is searched automatically. Results appear as they are found.'
+                      : workspace.scanProgress.phase !== 'complete'
+                        ? 'Review coverage and rescan to try again.'
+                        : 'Home has been searched. Review coverage or add an external folder.'}
                 </span>
                 {workspace.skills.length ? (
                   <button
@@ -1375,9 +1715,15 @@ export default function App() {
             )}
           </div>
           <div className="sidebar-footer">
-            <span className="connection-dot" />
+            {workspace?.scanning ? (
+              <LoaderCircle size={11} className="spin" />
+            ) : (
+              <span className="connection-dot" />
+            )}
             <span>
-              {activeRoots} source{activeRoots === 1 ? '' : 's'} connected
+              {workspace?.scanning
+                ? `${workspace.scanProgress.directoriesScanned.toLocaleString()} folders checked`
+                : `${activeRoots} source${activeRoots === 1 ? '' : 's'} available`}
             </span>
             <button
               className="icon-button tiny"
@@ -1490,7 +1836,7 @@ export default function App() {
                   <button
                     className="secondary-button"
                     onClick={() => void rescan()}
-                    disabled={scanBusy || !workspace}
+                    disabled={scanBusy || mutationLoading || !workspace}
                   >
                     <RefreshCw size={13} className={scanBusy ? 'spin' : ''} />
                     {scanBusy ? 'Scanning…' : 'Rescan'}
@@ -1546,7 +1892,11 @@ export default function App() {
                             {activeRoots === 1 ? '' : 's'}
                           </strong>
                           <span>
-                            Last scan at {timeLabel(workspace.lastScannedAt)}
+                            {workspace.scanning
+                              ? 'Searching Home and configured folders'
+                              : workspace.lastScannedAt
+                                ? `Last search at ${timeLabel(workspace.lastScannedAt)}`
+                                : 'Home is searched automatically'}
                           </span>
                         </div>
                       </div>
@@ -1555,6 +1905,12 @@ export default function App() {
                         Read-only browsing
                       </span>
                     </div>
+
+                    <ScanCoverage
+                      workspace={workspace}
+                      pending={rescanLoading || mutationLoading}
+                      onDetails={() => setModal('sources')}
+                    />
 
                     <div className="overview-columns">
                       <section className="overview-section source-overview">
@@ -1602,11 +1958,13 @@ export default function App() {
                               <span className="source-row-description">
                                 {kind === 'personal'
                                   ? 'User-level Skill folders'
-                                  : kind === 'project'
-                                    ? 'Project directories'
-                                    : kind === 'cache'
-                                      ? 'Skills from plugin packages'
-                                      : 'Folders you added'}
+                                  : kind === 'home'
+                                    ? 'Home, including repository Skills'
+                                    : kind === 'project'
+                                      ? 'Project directories'
+                                      : kind === 'cache'
+                                        ? 'Skills from plugin packages'
+                                        : 'Folders you added'}
                               </span>
                               <strong>{count}</strong>
                               <ChevronRight size={12} />
@@ -1625,7 +1983,7 @@ export default function App() {
                             </strong>
                             <p>
                               {scanBusy
-                                ? 'Your Skills will update when the scan finishes.'
+                                ? 'New Skills appear as they are found. Keep browsing and reading during the search.'
                                 : 'Browsing never runs a Skill or changes its files. Open your editor when you are ready to make changes.'}
                             </p>
                           </div>
@@ -1663,11 +2021,20 @@ export default function App() {
                             ))
                           ) : (
                             <div className="recent-empty">
-                              <Folder size={24} />
-                              <strong>Your first Skill starts here</strong>
+                              {workspace.scanning ? (
+                                <LoaderCircle size={24} className="spin" />
+                              ) : (
+                                <Folder size={24} />
+                              )}
+                              <strong>
+                                {workspace.scanning
+                                  ? 'Looking through your Home directory'
+                                  : 'Your first Skill starts here'}
+                              </strong>
                               <p>
-                                Add a scan folder to explore its SKILL.md and
-                                supporting files.
+                                {workspace.scanning
+                                  ? 'You can start reading as soon as a Skill appears.'
+                                  : 'Home is searched automatically. Add a folder for Skills stored elsewhere.'}
                               </p>
                               <button
                                 className="secondary-button"
@@ -1707,20 +2074,6 @@ export default function App() {
                         </div>
                       </div>
                     </section>
-                    {rootsWithErrors.length > 0 && (
-                      <button
-                        className="scan-warning"
-                        onClick={() => setModal('sources')}
-                      >
-                        <CircleAlert size={14} />
-                        <span>
-                          {rootsWithErrors.length} scan folder
-                          {rootsWithErrors.length === 1 ? '' : 's'} could not be
-                          read. Review sources.
-                        </span>
-                        <ArrowRight size={13} />
-                      </button>
-                    )}
                     <div className="overview-bottom">
                       <span>
                         ZSkills <span className="muted">/</span> A small
@@ -1921,7 +2274,7 @@ export default function App() {
                         content={currentFile.content.content}
                         skillId={activeTab.skillId}
                         path={activeTab.path}
-                        onOpen={(path) => openFile(activeTab.skillId, path)}
+                        onOpen={openRelatedFile}
                       />
                     ) : currentFile.content.kind === 'image' ? (
                       <div className="image-viewer">
@@ -2011,13 +2364,17 @@ export default function App() {
         <div>
           <button
             onClick={() => void rescan()}
-            disabled={scanBusy || !workspace}
+            disabled={scanBusy || mutationLoading || !workspace}
           >
             <RefreshCw size={11} className={scanBusy ? 'spin' : ''} />
             <span>
               {scanBusy
-                ? 'Scanning folders…'
-                : `Scanned ${timeLabel(workspace?.lastScannedAt || null)}`}
+                ? `Searching · ${workspace?.scanProgress.directoriesScanned.toLocaleString() || 0} folders checked`
+                : workspace && workspace.scanProgress.phase !== 'complete'
+                  ? 'Search interrupted · Rescan'
+                  : workspace?.scanProgress.restoredFromCache
+                    ? 'Cached results · awaiting verification'
+                    : `Searched ${timeLabel(workspace?.lastScannedAt || null)}`}
             </span>
           </button>
           <span className="footer-divider" />
@@ -2063,7 +2420,7 @@ export default function App() {
               <button
                 className="secondary-button"
                 onClick={() => void rescan()}
-                disabled={scanBusy || !workspace}
+                disabled={scanBusy || mutationLoading || !workspace}
               >
                 <RefreshCw size={13} className={scanBusy ? 'spin' : ''} />
                 {scanBusy ? 'Scanning…' : 'Rescan all'}
@@ -2071,6 +2428,21 @@ export default function App() {
             </>
           }
         >
+          <div className="source-scope-note">
+            <Home size={15} />
+            <p>
+              Your Home directory is always searched, including Skills inside
+              repositories. Add folders for Skills stored elsewhere, such as on
+              an external drive.
+            </p>
+          </div>
+          {workspace && (
+            <ScanCoverage
+              workspace={workspace}
+              detailed
+              pending={rescanLoading || mutationLoading}
+            />
+          )}
           <div className="dialog-section-heading">
             <span>SCAN FOLDERS</span>
             <span>{workspace?.roots.length || 0} configured</span>
@@ -2088,11 +2460,15 @@ export default function App() {
                     <span className={`root-status ${root.status}`}>
                       {root.status === 'ready'
                         ? `${root.skillCount} Skills`
-                        : root.status === 'missing'
-                          ? 'Not found'
-                          : root.status === 'scanning'
-                            ? 'Scanning'
-                            : 'Cannot read'}
+                        : root.status === 'partial'
+                          ? `${root.skillCount} Skills · Partly read`
+                          : root.status === 'missing'
+                            ? 'Not found'
+                            : root.status === 'scanning'
+                              ? workspace.scanning
+                                ? `${root.skillCount} Skills · Scanning`
+                                : 'Search interrupted'
+                              : 'Cannot read'}
                     </span>
                   </div>
                   <code title={root.path}>
@@ -2105,7 +2481,7 @@ export default function App() {
                     className="icon-button"
                     aria-label={`Remove ${root.label} from scan sources`}
                     title="Remove scan source"
-                    disabled={mutationLoading}
+                    disabled={mutationLoading || scanBusy}
                     onClick={() => void removeRoot(root.id)}
                   >
                     <Trash2 size={14} />
@@ -2124,24 +2500,25 @@ export default function App() {
               void addRoot();
             }}
           >
-            <label htmlFor="root-path">Add a folder</label>
+            <label htmlFor="root-path">Add an extra folder</label>
             <p>
-              Enter an absolute path on the service computer. Add the folder
-              that contains your Skills.
+              Enter an absolute path on the service computer. Home already
+              includes your repository Skills; extra folders can cover other
+              locations.
             </p>
             <div>
               <input
                 id="root-path"
                 value={newRoot}
                 onChange={(event) => setNewRoot(event.target.value)}
-                placeholder="/Users/you/project/.agents/skills"
+                placeholder="/Volumes/Work/skills"
                 spellCheck={false}
                 autoComplete="off"
               />
               <button
                 className="primary-button"
                 type="submit"
-                disabled={mutationLoading || !newRoot.trim()}
+                disabled={mutationLoading || scanBusy || !newRoot.trim()}
               >
                 {mutationLoading ? (
                   <LoaderCircle size={13} className="spin" />

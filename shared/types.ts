@@ -1,4 +1,4 @@
-export type SourceKind = 'personal' | 'project' | 'cache' | 'custom';
+export type SourceKind = 'personal' | 'project' | 'home' | 'cache' | 'custom';
 export type EditorChoice = 'system' | 'vscode' | 'zed';
 
 export interface SourceRoot {
@@ -6,7 +6,7 @@ export interface SourceRoot {
   label: string;
   path: string;
   kind: SourceKind;
-  status: 'ready' | 'missing' | 'error' | 'scanning';
+  status: 'ready' | 'missing' | 'error' | 'partial' | 'scanning';
   skillCount: number;
   error?: string;
   removable: boolean;
@@ -28,6 +28,21 @@ export interface EditorSettings {
   available: boolean;
 }
 
+export interface ScanProgress {
+  phase: 'quick' | 'home' | 'complete' | 'failed';
+  startedAt: string;
+  completedAt: string | null;
+  directoriesScanned: number;
+  candidatesChecked: number;
+  invalidSkills: number;
+  unreadableDirectories: number;
+  externalLinksSkipped: number;
+  currentPath: string | null;
+  restoredFromCache: boolean;
+  watching: boolean;
+  issues: { path: string; message: string }[];
+}
+
 export interface WorkspaceSnapshot {
   host: {
     hostname: string;
@@ -39,6 +54,7 @@ export interface WorkspaceSnapshot {
   roots: SourceRoot[];
   lastScannedAt: string | null;
   scanning: boolean;
+  scanProgress: ScanProgress;
   editor: EditorSettings;
 }
 

@@ -70,7 +70,7 @@ export function createApp(service = new SkillsService()): express.Express {
     response.json(await service.getWorkspace());
   });
   app.post('/api/rescan', async (_request, response) => {
-    response.json(await service.rescan());
+    response.json(await service.startScan());
   });
   app.get('/api/skills/:id', async (request, response) => {
     response.json(await service.getSkill(request.params.id));
@@ -137,8 +137,10 @@ export function createApp(service = new SkillsService()): express.Express {
 }
 
 export async function startServer(): Promise<Server> {
-  const app = createApp();
+  const service = new SkillsService();
+  const app = createApp(service);
   const server = createHttpServer(app);
+  server.once('close', () => service.dispose());
   const port = Number(process.env.PORT ?? 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error('PORT must be an integer between 1 and 65535.');
